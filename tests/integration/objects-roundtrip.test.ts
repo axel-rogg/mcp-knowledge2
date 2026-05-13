@@ -34,7 +34,9 @@ process.env.BLOB_BUCKET = 'test';
 process.env.VERTEX_PROJECT = 'test-project';
 process.env.MCP_APPROVAL_BASE_URL = 'http://127.0.0.1:1';
 process.env.MCP_APPROVAL_INTERNAL_TOKEN = 'test-internal-token-must-be-32-bytes-or-more-x';
-process.env.BACKUP_MASTER_KEY = 'test-backup-master-key-must-be-32-bytes-ok-now';
+// 32 zero-bytes base64 — matches the F-21 validator which now requires
+// BACKUP_MASTER_KEY to decode to exactly 32 raw bytes.
+process.env.BACKUP_MASTER_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 
 // resetEnvCacheForTest is called once DATABASE_URL is known (after container starts).
 import { resetEnvCacheForTest } from '../../src/types/env.ts';
