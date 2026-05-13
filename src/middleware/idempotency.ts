@@ -75,6 +75,10 @@ export const idempotency: MiddlewareHandler = async (c, next) => {
         const blob = deserializeBlob(new Uint8Array(cached.responseBody));
         const plain = await decrypt(key, blob, idemAad(ctx.userId, idemKey));
         const text = new TextDecoder().decode(plain);
+        // F-18: only 2xx responses are cached, and every 2xx response in
+        // this service emits application/json. If a future handler ever
+        // returns a different content-type for a 2xx, add a
+        // response_content_type column and stop hardcoding here.
         return new Response(text, {
           status: cached.responseStatus,
           headers: {

@@ -17,6 +17,21 @@
     }
   }
 
+  # F-26 (audit 2026-05-13): /health/ready exposes which dependency
+  # (db / blob) is failing. Restrict to internal monitoring callers
+  # (same allowlist as /v1/internal/*). /health (liveness, no detail)
+  # stays public for orchestrators.
+  @ready path /health/ready
+  handle @ready {
+    @allowed remote_ip {$APPROVAL2_IP_ALLOWLIST}
+    handle @allowed {
+      reverse_proxy app:8080
+    }
+    handle {
+      respond "Forbidden" 403
+    }
+  }
+
   reverse_proxy app:8080 {
     header_up X-Real-IP {http.request.remote.host}
   }

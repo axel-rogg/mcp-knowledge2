@@ -22,8 +22,12 @@ export async function runBackup(): Promise<void> {
   const pgDump = spawn('pg_dump', ['--format=custom', '--no-owner', env.DATABASE_ADMIN_URL]);
   const chunks: Buffer[] = [];
   pgDump.stdout.on('data', (c: Buffer) => chunks.push(c));
+  // F-20: trace (not debug) — pg_dump verbose stderr lists table names and
+  // row counts, which can include indirectly-PII-shaped identifiers in
+  // user-content table names if we ever schema-add per-user tables. Keep
+  // it below the production log-level threshold.
   pgDump.stderr.on('data', (c: Buffer) =>
-    logger.debug({ stderr: c.toString() }, 'pg_dump stderr'),
+    logger.trace({ stderr: c.toString() }, 'pg_dump stderr'),
   );
 
   const dumpResult = await new Promise<number>((resolve) => pgDump.on('close', resolve));

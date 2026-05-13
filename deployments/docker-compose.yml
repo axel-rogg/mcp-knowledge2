@@ -43,6 +43,11 @@ services:
       retries: 3
 
   postgres:
+    # F-23 (audit 2026-05-13): tag `pg16` is mutable. Before production
+    # cutover, pin to a digest, e.g.
+    #   pgvector/pgvector:pg16@sha256:<resolved-digest>
+    # Resolve with: docker pull pgvector/pgvector:pg16 &&
+    #   docker inspect --format='{{index .RepoDigests 0}}' pgvector/pgvector:pg16
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: postgres

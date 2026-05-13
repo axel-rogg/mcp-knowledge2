@@ -121,6 +121,38 @@ Audit logs in `audit_log` table record action + resource id, but
   user; a flood from many JWT subjects requires reverse-proxy rate
   limiting (Caddy / Cloud Run throttling).
 
-## Reporting issues
+## Audit findings explicitly accepted as documented (2026-05-13)
 
-Internal — please contact the engineering owner directly.
+These items came up in the security review but are intentionally not
+"fixes" — they are properties of the current architecture that we
+choose to document instead of code around:
+
+- **F-13 (CORS `origin: '*'`)** — the API is JWT-only, no browser
+  client, `credentials: false`. The Cross-Origin headers do not allow
+  cookie-bearing requests. `/health` and `/version` answer without
+  auth and reveal only build info. We do not enforce a stricter
+  Origin until/unless a browser client appears.
+- **F-17 (presignGet content-disposition)** — `presignGet` is wired
+  into the adapter but no route exposes it yet. If/when a public
+  download path appears, the caller must set
+  `ResponseContentDisposition: 'attachment; filename=<safe>'` and
+  `ResponseContentType: 'application/octet-stream'` to prevent
+  MIME-sniff XSS on the API domain. See the JSDoc on
+  `BlobStore.presignGet`.
+- **F-19 (pg-boss runs as `knowledge_admin` BYPASSRLS)** — necessary
+  because cron jobs operate across users (sweep, GC, backup,
+  erase-cascade-blob-queue). Mitigation: only the Postgres super-user
+  can insert into the `pgboss.*` schema; an attacker would need
+  Postgres write access to exploit. Hardening (signed job payloads)
+  is Phase 5+.
+- **F-27 (logger redact paths)** — pino's `paths` configuration uses
+  property-name matching, and the `request_log` middleware only
+  serialises path / method / status / duration / user_id /
+  request_id — never request body or query string. Adding new fields
+  to the request-log middleware requires reviewing pino-redact
+  coverage at the same time.
+- **F-29 (user-id in error log on KMS resolve failure)** — UUIDs are
+  not directly PII; the operator already has full DB access. Logged.
+- **F-30 (compromised mcp-approval2)** — assumed trusted-party per
+  threat model. If mcp-approval2 is compromised, this service is too
+  (KMS resolution is delegated). No service-side defense possible.
