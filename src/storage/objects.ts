@@ -389,10 +389,12 @@ export async function softDeleteObject(id: string): Promise<void> {
   const ctx = requireContext();
   if (!ctx.userId) throw errBadRequest('user context required');
   await withUserTx(ctx.userId, ctx.requestId, async (db) => {
+    // Filter on deletedAt IS NULL so a re-delete of an already-deleted
+    // row returns 404 (the canonical "no work to do") instead of 204.
     const r = await db
       .update(objects)
       .set({ deletedAt: nowMs(), updatedAt: nowMs() })
-      .where(eq(objects.id, id))
+      .where(and(eq(objects.id, id), isNull(objects.deletedAt)))
       .returning({ id: objects.id });
     if (r.length === 0) throw errNotFound(`object ${id} not found or not deletable`);
   });
