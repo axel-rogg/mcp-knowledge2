@@ -136,7 +136,7 @@ beforeAll(async () => {
     const u = c.req.header('x-test-user') ?? currentUserId;
     (c.set as (key: string, value: unknown) => void)('ctx', {
       userId: u,
-      requestId: c.req.header('x-request-id') ?? `test-${Date.now()}`,
+      requestId: c.req.header('x-request-id') ?? crypto.randomUUID(),
       authMode: 'jwt',
       scopes: [],
     });
@@ -153,7 +153,7 @@ beforeAll(async () => {
   internal.use('*', async (c, next) => {
     (c.set as (key: string, value: unknown) => void)('ctx', {
       userId: null,
-      requestId: `internal-${Date.now()}`,
+      requestId: crypto.randomUUID(),
       authMode: 'service',
       scopes: [],
     });
