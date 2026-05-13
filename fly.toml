@@ -1,0 +1,89 @@
+# fly.toml — mcp-knowledge2
+#
+# Storage + Sharing + Hybrid-Search service. Sister to mcp-approval2.
+# JWTs are issued by mcp-approval2 and verified here via JWKS; per-user DEKs
+# are resolved via the mcp-approval2 internal API.
+#
+# Region: fra (Frankfurt). DSGVO posture — keep data in EU.
+# Postgres: attached via `fly postgres attach` (sets DATABASE_URL secret).
+# pgvector: enabled manually after postgres create — see deploy/fly/deploy.sh.
+
+app             = "mcp-knowledge2"
+primary_region  = "fra"
+kill_signal     = "SIGINT"
+kill_timeout    = "30s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[deploy]
+  # Run migrations against the freshly-attached Postgres before swapping
+  # traffic to the new release.
+  release_command = "npm run db:migrate"
+  strategy        = "rolling"
+
+[env]
+  # ─── Server ───────────────────────────────────────────────────────────
+  PORT      = "8080"
+  NODE_ENV  = "production"
+  LOG_LEVEL = "info"
+
+  # ─── Auth — verify JWTs minted by mcp-approval2 ───────────────────────
+  JWKS_URL                 = "https://mcp-approval2.fly.dev/.well-known/jwks.json"
+  JWT_ISSUER               = "mcp-approval2"
+  JWT_AUDIENCE             = "mcp-knowledge2"
+  JWKS_CACHE_TTL_SECONDS   = "86400"
+
+  # ─── Service-to-service to mcp-approval2 ──────────────────────────────
+  # Used for /v1/internal/* calls (DEK resolve via KMS API).
+  # MCP_APPROVAL_INTERNAL_TOKEN is a secret, not set here.
+  MCP_APPROVAL_BASE_URL = "https://mcp-approval2.fly.dev"
+
+  # ─── Embeddings — Vertex AI ───────────────────────────────────────────
+  # VERTEX_PROJECT + VERTEX_SERVICE_ACCOUNT_JSON come from secrets.
+  VERTEX_LOCATION = "europe-west4"
+  VERTEX_MODEL    = "text-embedding-005"
+
+  # ─── Database pool sizing ─────────────────────────────────────────────
+  DATABASE_POOL_MAX = "10"
+
+  # ─── Backup retention ─────────────────────────────────────────────────
+  BACKUP_RETENTION_DAYS = "30"
+
+[http_service]
+  internal_port        = 8080
+  force_https          = true
+  auto_stop_machines   = "stop"
+  auto_start_machines  = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type       = "requests"
+    soft_limit = 80
+    hard_limit = 120
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval     = "30s"
+    method       = "GET"
+    timeout      = "5s"
+    path         = "/health"
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval     = "60s"
+    method       = "GET"
+    timeout      = "8s"
+    path         = "/health/ready"
+
+[[vm]]
+  size   = "shared-cpu-1x"
+  memory = "512mb"
+  cpus   = 1
+
+# ─── Metrics ────────────────────────────────────────────────────────────
+# /metrics is exposed by prom-client (see src/observability/metrics.ts).
+# Bound to the same internal port; Fly's metrics scraper will pull it.
+[metrics]
+  port = 8080
+  path = "/metrics"

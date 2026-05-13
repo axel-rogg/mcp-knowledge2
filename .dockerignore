@@ -1,14 +1,44 @@
+# ─── Build artefacts ──────────────────────────────────────────────────
 node_modules
 dist
+coverage
+*.tsbuildinfo
+
+# ─── VCS / CI ─────────────────────────────────────────────────────────
 .git
+.gitignore
 .github
-.env
-.env.*
-tests
-docs
+
+# ─── Editor / IDE ─────────────────────────────────────────────────────
 .vscode
 .idea
-*.md
-coverage
+*.swp
+.DS_Store
+
+# ─── Local dev / secrets — must never enter the image ─────────────────
+.env
+.env.*
+!.env.example
 secrets
 data
+*.key
+*.pem
+vertex-sa.json
+
+# ─── Tests & docs — not needed at runtime ─────────────────────────────
+tests
+docs
+deployments
+deploy
+*.md
+!README.md
+
+# ─── Logs ─────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+
+# ─── Misc dev tooling ─────────────────────────────────────────────────
+.eslintcache
+.vitest-temp
+fly.toml

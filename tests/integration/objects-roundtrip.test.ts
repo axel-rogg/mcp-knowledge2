@@ -21,7 +21,7 @@ import { Hono } from 'hono';
 // Environment must be configured BEFORE any module under test is imported,
 // because `loadEnv` caches the parsed config.
 process.env.NODE_ENV = 'test';
-process.env.LOG_LEVEL = 'fatal';
+process.env.LOG_LEVEL = 'error';
 process.env.JWKS_URL = 'http://127.0.0.1:1/.well-known/jwks.json'; // unused
 process.env.JWT_ISSUER = 'test-issuer';
 process.env.JWT_AUDIENCE = 'mcp-knowledge2';
