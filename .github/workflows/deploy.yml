@@ -1,14 +1,14 @@
 name: deploy
 
+# Manual-only until GCP_WIF_PROVIDER + GCP_DEPLOY_SA + GCP_PROJECT + related
+# secrets are configured in the repo. Once they're set, an additional
+# trigger can be added (e.g. push tag 'v*' or push with '[deploy]' marker).
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   cloud-run:
-    if: contains(github.event.head_commit.message, '[deploy]')
     runs-on: ubuntu-latest
-    needs: []
     permissions:
       contents: read
       id-token: write
