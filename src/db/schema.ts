@@ -282,6 +282,16 @@ export const uploads = pgTable('uploads', {
 
 // ─── User Quotas ───────────────────────────────────────────────────────────
 
+export const blobDeletionQueue = pgTable('blob_deletion_queue', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  blobKey: text('blob_key').notNull(),
+  reason: text('reason').notNull(),
+  enqueuedAt: bigint('enqueued_at', { mode: 'number' }).notNull(),
+  attempts: integer('attempts').notNull().default(0),
+  lastError: text('last_error'),
+  nextAttemptAt: bigint('next_attempt_at', { mode: 'number' }).notNull(),
+});
+
 export const userQuotas = pgTable('user_quotas', {
   userId: uuid('user_id').primaryKey(),
   objectCountMax: integer('object_count_max').notNull().default(10_000),
@@ -311,6 +321,7 @@ export const schema = {
   idempotencyRecords,
   uploads,
   userQuotas,
+  blobDeletionQueue,
 };
 
 export type ObjectRow = typeof objects.$inferSelect;

@@ -40,9 +40,16 @@ export const sharesRouter = new Hono()
   })
   .delete('/shares/:share_id', async (c) => {
     const shareId = c.req.param('share_id');
-    await revokeShare(shareId);
-    await emitAudit({ action: 'share.revoke', resourceId: shareId, result: 'success' });
-    return c.body(null, 204);
+    try {
+      await revokeShare(shareId);
+      await emitAudit({ action: 'share.revoke', resourceId: shareId, result: 'success' });
+      return c.body(null, 204);
+    } catch (e) {
+      if (e instanceof Error && /not found or already revoked/i.test(e.message)) {
+        await emitAudit({ action: 'share.revoke', resourceId: shareId, result: 'denied' });
+      }
+      throw e;
+    }
   })
   .get('/shared-with-me', async (c) => {
     const shares = await listSharedWithMe();

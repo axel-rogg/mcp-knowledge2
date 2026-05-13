@@ -120,12 +120,20 @@ export const objectsRouter = new Hono()
   .get('/objects/:id', async (c) => {
     const id = c.req.param('id');
     const includeBody = c.req.query('expand')?.split(',').includes('body') ?? false;
-    const r = await readObject(id, { includeBody });
-    await emitAudit({ action: 'object.read', resourceKind: r.view.kind, resourceId: id, result: 'success' });
-    return c.json({
-      ...r.view,
-      body_b64: r.body ? Buffer.from(r.body).toString('base64') : undefined,
-    });
+    try {
+      const r = await readObject(id, { includeBody });
+      await emitAudit({ action: 'object.read', resourceKind: r.view.kind, resourceId: id, result: 'success' });
+      return c.json({
+        ...r.view,
+        body_b64: r.body ? Buffer.from(r.body).toString('base64') : undefined,
+      });
+    } catch (e) {
+      // F-25: log RLS/ownership denials explicitly so SIEM can see them
+      if (e instanceof Error && /not found or not visible|not implemented/i.test(e.message)) {
+        await emitAudit({ action: 'object.read', resourceId: id, result: 'denied' });
+      }
+      throw e;
+    }
   })
   .patch('/objects/:id', async (c) => {
     const id = c.req.param('id');
@@ -147,15 +155,29 @@ export const objectsRouter = new Hono()
     if (body.expected_version !== undefined) input.expectedVersion = body.expected_version;
     if (body.re_embed !== undefined) input.reEmbed = body.re_embed;
 
-    const updated = await updateObject(id, input);
-    await emitAudit({ action: 'object.update', resourceId: id, result: 'success' });
-    return c.json(updated);
+    try {
+      const updated = await updateObject(id, input);
+      await emitAudit({ action: 'object.update', resourceId: id, result: 'success' });
+      return c.json(updated);
+    } catch (e) {
+      if (e instanceof Error && /not found or not visible|not implemented/i.test(e.message)) {
+        await emitAudit({ action: 'object.update', resourceId: id, result: 'denied' });
+      }
+      throw e;
+    }
   })
   .delete('/objects/:id', async (c) => {
     const id = c.req.param('id');
-    await softDeleteObject(id);
-    await emitAudit({ action: 'object.soft_delete', resourceId: id, result: 'success' });
-    return c.body(null, 204);
+    try {
+      await softDeleteObject(id);
+      await emitAudit({ action: 'object.soft_delete', resourceId: id, result: 'success' });
+      return c.body(null, 204);
+    } catch (e) {
+      if (e instanceof Error && /not found or not deletable/i.test(e.message)) {
+        await emitAudit({ action: 'object.soft_delete', resourceId: id, result: 'denied' });
+      }
+      throw e;
+    }
   })
   .post('/objects/:id/restore', async (c) => {
     const id = c.req.param('id');

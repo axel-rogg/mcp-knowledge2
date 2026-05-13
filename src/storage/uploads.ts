@@ -13,8 +13,13 @@ import { requireContext } from '../lib/context.ts';
 import { errBadRequest, errNotFound } from '../lib/errors.ts';
 import { blobStore } from '../adapters/blob/s3.ts';
 import { uuidV4, nowMs } from '../lib/ids.ts';
+import { buildAad } from '../lib/crypto/aad.ts';
+import { encrypt, importKey } from '../lib/crypto/aes_gcm.ts';
+import { serializeBlob } from '../lib/crypto/serialize.ts';
+import { kms } from '../adapters/kms/internal_api.ts';
 
-const UPLOAD_TTL_MS = 60 * 60 * 1000; // 1h
+// F-16: keep the presigned-PUT window short. Long uploads should chunk.
+const UPLOAD_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
 
 export interface InitUploadInput {
@@ -87,26 +92,50 @@ function toStatus(u: UploadRow): UploadStatus {
 export async function finalizeUpload(id: string): Promise<UploadStatus> {
   const ctx = requireContext();
   if (!ctx.userId) throw errBadRequest('user context required');
-  return await withUserTx(ctx.userId, ctx.requestId, async (db) => {
-    const rows = await db.select().from(uploads).where(eq(uploads.id, id)).limit(1);
-    const u = rows[0];
-    if (!u) throw errNotFound(`upload ${id} not found`);
-    if (u.status !== 'pending') {
-      throw errBadRequest(`upload status is ${u.status}, cannot finalize`);
-    }
-    // Verify blob exists + measure size
-    const body = await blobStore().get(u.blobKey);
-    if (!body) throw errBadRequest('blob not uploaded');
-    if (body.byteLength > MAX_UPLOAD_BYTES) {
-      throw errBadRequest(`body exceeds max ${MAX_UPLOAD_BYTES} bytes`);
-    }
-    const hash = await sha256Hex(body);
 
+  // 1. Load the upload row and the freshly-uploaded plaintext blob.
+  const u = await withUserTx(ctx.userId, ctx.requestId, async (db) => {
+    const rows = await db.select().from(uploads).where(eq(uploads.id, id)).limit(1);
+    return rows[0] ?? null;
+  });
+  if (!u) throw errNotFound(`upload ${id} not found`);
+  if (u.status !== 'pending') {
+    throw errBadRequest(`upload status is ${u.status}, cannot finalize`);
+  }
+  const plain = await blobStore().get(u.blobKey);
+  if (!plain) throw errBadRequest('blob not uploaded');
+  if (plain.byteLength > MAX_UPLOAD_BYTES) {
+    throw errBadRequest(`body exceeds max ${MAX_UPLOAD_BYTES} bytes`);
+  }
+  const hash = await sha256Hex(plain);
+
+  // 2. F-3: encrypt-in-place. The plaintext is only valid in the bucket
+  //    between PUT (presigned URL, ≤10 min) and finalize. After finalize
+  //    the blob is a sealed AES-256-GCM cipher with AAD bound to
+  //    (user, upload_id). A subsequent object-creation-from-upload pipe
+  //    (TODO Phase 5+) would decrypt with this AAD and re-encrypt with
+  //    the object-AAD.
+  const dek = await kms().resolveUserDek(ctx.userId, ctx.requestId);
+  const key = await importKey(dek);
+  const aad = buildAad({
+    recordType: 'objects',
+    ownerId: ctx.userId,
+    objectId: id, // upload_id doubles as AAD object-id slot
+    kind: 'memo',
+    subtype: 'upload-finalized',
+  });
+  const cipher = await encrypt(key, plain, aad);
+  const sealed = serializeBlob(cipher);
+  await blobStore().put(u.blobKey, sealed, { contentType: 'application/octet-stream' });
+
+  // 3. Mark finalized + record measured size/hash of the plaintext (not
+  //    the cipher — these are properties of the original content).
+  return await withUserTx(ctx.userId, ctx.requestId, async (db) => {
     const updated = await db
       .update(uploads)
       .set({
         status: 'finalized',
-        bodySize: body.byteLength,
+        bodySize: plain.byteLength,
         bodyHash: hash,
         finalizedAt: nowMs(),
       })

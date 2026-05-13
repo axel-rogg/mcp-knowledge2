@@ -8,14 +8,21 @@
 
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { withAdminTx } from '../db/client.ts';
 import { hardDeleteByOwner } from '../storage/objects.ts';
-import { shareGrants, idempotencyRecords, uploads } from '../db/schema.ts';
+import {
+  auditLog,
+  blobDeletionQueue,
+  idempotencyRecords,
+  shareGrants,
+  uploads,
+} from '../db/schema.ts';
 import { blobStore } from '../adapters/blob/s3.ts';
 import { emitAudit } from '../observability/audit.ts';
 import { errBadRequest } from '../lib/errors.ts';
 import { logger } from '../lib/logger.ts';
+import { nowMs } from '../lib/ids.ts';
 
 const EraseBody = z.object({
   user_id: z.string().uuid(),
@@ -31,7 +38,11 @@ export const internalRouter = new Hono()
 
     const userId = b.user_id;
 
-    // 1. Cascade-delete via BYPASSRLS admin tx
+    const now = nowMs();
+    const SENTINEL = '00000000-0000-0000-0000-000000000000';
+
+    // 1. Cascade-delete via BYPASSRLS admin tx (F-7: also pseudonymises
+    //    historical audit_log rows so the GDPR erase is complete).
     const result = await withAdminTx(async (db) => {
       const objectsResult = await hardDeleteByOwner(db, userId);
       const sharesDeleted = await db
@@ -51,44 +62,94 @@ export const internalRouter = new Hono()
         .where(eq(uploads.ownerId, userId))
         .returning({ id: uploads.id });
 
+      // F-7: pseudonymise audit_log rows where this user is the actor.
+      // We DON'T delete the rows — that would break the append-only
+      // promise the compliance story relies on. We replace the actor
+      // UUID with the sentinel, and strip any PII-ish keys from
+      // details JSON. The admin role can UPDATE audit_log (the
+      // append-only GRANT-REVOKE only locks down knowledge_app).
+      const pseudoActor = await db
+        .update(auditLog)
+        .set({
+          actorUserId: SENTINEL,
+          details: sql`
+            CASE WHEN ${auditLog.details} IS NULL THEN NULL
+                 ELSE ${auditLog.details} - 'granted_to' - 'target_user_id' - 'shared_with'
+            END
+          `,
+        })
+        .where(eq(auditLog.actorUserId, userId))
+        .returning({ id: auditLog.id });
+
+      // F-8: queue every blob for deletion BEFORE we tell the caller
+      // we're done. The cron will retry. We do an immediate best-effort
+      // pass below and remove succeeded keys from the queue right away.
+      if (objectsResult.blobsToDelete.length > 0) {
+        await db.insert(blobDeletionQueue).values(
+          objectsResult.blobsToDelete.map((key) => ({
+            blobKey: key,
+            reason: 'erase-user',
+            enqueuedAt: now,
+            nextAttemptAt: now,
+          })),
+        );
+      }
+
       return {
         objects: objectsResult.rowsDeleted,
         shares: sharesDeleted.length + sharesByMe.length,
         idempotency: idemDeleted.length,
         uploads: uploadsDeleted.length,
+        audit_pseudonymised: pseudoActor.length,
         blobsToDelete: objectsResult.blobsToDelete,
       };
     });
 
-    // 2. Best-effort blob cleanup (failures recorded, not retried — pg-boss
-    //    cron `blobs.cleanup_orphans` will sweep anything left)
+    // 2. Best-effort immediate blob cleanup. Any failures stay in the
+    //    queue and get retried by the cron job (F-8).
     let blobsDeleted = 0;
+    const stillPending: string[] = [];
     for (const key of result.blobsToDelete) {
       try {
         await blobStore().delete(key);
         blobsDeleted += 1;
+        // Remove from queue — best-effort, the cron tolerates duplicates.
+        await withAdminTx(async (db) => {
+          await db.delete(blobDeletionQueue).where(eq(blobDeletionQueue.blobKey, key));
+        });
       } catch (e) {
-        logger.error({ err: e, key }, 'blob delete during erase-user failed');
+        stillPending.push(key);
+        logger.error({ err: e, key }, 'blob delete during erase-user failed; left in queue');
       }
     }
 
+    // F-8: audit result reflects whether anything is still pending.
     await emitAudit({
       action: 'user.erased',
       resourceKind: 'system',
       resourceId: userId,
-      result: 'success',
-      details: { ...result, blobs_deleted: blobsDeleted, blobs_pending: result.blobsToDelete.length - blobsDeleted },
+      result: stillPending.length === 0 ? 'success' : 'error',
+      details: {
+        objects_deleted: result.objects,
+        shares_deleted: result.shares,
+        idempotency_deleted: result.idempotency,
+        uploads_deleted: result.uploads,
+        audit_pseudonymised: result.audit_pseudonymised,
+        blobs_deleted: blobsDeleted,
+        blobs_pending: stillPending.length,
+      },
     });
 
     return c.json({
-      status: 'ok',
+      status: stillPending.length === 0 ? 'ok' : 'partial',
       deleted: {
         objects: result.objects,
         shares: result.shares,
         idempotency: result.idempotency,
         uploads: result.uploads,
+        audit_pseudonymised: result.audit_pseudonymised,
         blobs_deleted: blobsDeleted,
-        blobs_pending: result.blobsToDelete.length - blobsDeleted,
+        blobs_pending: stillPending.length,
       },
     });
   })

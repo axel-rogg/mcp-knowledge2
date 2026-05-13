@@ -1,8 +1,8 @@
 // Upload lifecycle cron jobs + orphan-blob cleanup.
 
-import { and, eq, inArray, lt } from 'drizzle-orm';
+import { and, eq, inArray, lt, sql } from 'drizzle-orm';
 import { withAdminTx } from '../db/client.ts';
-import { uploads } from '../db/schema.ts';
+import { blobDeletionQueue, uploads } from '../db/schema.ts';
 import { blobStore } from '../adapters/blob/s3.ts';
 import { nowMs } from '../lib/ids.ts';
 import { logger } from '../lib/logger.ts';
@@ -45,7 +45,45 @@ export async function purgeExpiredUploads(): Promise<void> {
 }
 
 export async function cleanupOrphanBlobs(): Promise<void> {
-  // Phase 5+: walk blob keys, cross-reference with objects/uploads, delete
-  // unreferenced. Placeholder for now — listing blobs is provider-specific.
-  logger.debug('cleanup_orphan_blobs: noop (phase 5)');
+  // F-8: process the blob_deletion_queue. Items get enqueued by
+  // /v1/internal/erase-user (and later by other paths that hard-delete
+  // objects). Exponential-ish backoff per attempt, capped at ~24h.
+  const now = nowMs();
+  const due = await withAdminTx(async (db) => {
+    return db
+      .select()
+      .from(blobDeletionQueue)
+      .where(lt(blobDeletionQueue.nextAttemptAt, now))
+      .limit(200);
+  });
+  if (due.length === 0) return;
+
+  let deleted = 0;
+  let retried = 0;
+  for (const row of due) {
+    try {
+      await blobStore().delete(row.blobKey);
+      await withAdminTx(async (db) => {
+        await db.delete(blobDeletionQueue).where(eq(blobDeletionQueue.id, row.id));
+      });
+      deleted += 1;
+    } catch (e) {
+      const attempts = row.attempts + 1;
+      // Backoff: 5min, 30min, 2h, 8h, 24h, …
+      const backoffMs = Math.min(5 * 60 * 1000 * Math.pow(4, attempts - 1), 24 * 60 * 60 * 1000);
+      await withAdminTx(async (db) => {
+        await db
+          .update(blobDeletionQueue)
+          .set({
+            attempts: sql`${blobDeletionQueue.attempts} + 1`,
+            lastError: (e as Error).message.slice(0, 1024),
+            nextAttemptAt: now + backoffMs,
+          })
+          .where(eq(blobDeletionQueue.id, row.id));
+      });
+      retried += 1;
+      logger.warn({ err: e, key: row.blobKey, attempts }, 'blob deletion retry scheduled');
+    }
+  }
+  logger.info({ deleted, retried, total: due.length }, 'blob deletion queue swept');
 }

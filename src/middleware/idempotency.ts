@@ -1,6 +1,12 @@
 // Idempotency middleware. Reads `Idempotency-Key` header; if present and the
 // (user_id, idem_key) is cached, returns the recorded response. Otherwise
 // runs the handler and records the response body+status for the TTL.
+//
+// F-5: response bodies are stored ENCRYPTED with the per-user DEK + AAD.
+// The plaintext would otherwise sit at-rest for 24h, defeating the
+// envelope-encryption guarantee for read responses (which contain
+// decrypted body_b64). The AAD binds user_id + idem_key so a row can't
+// be replayed across users or against a different request key.
 
 import type { MiddlewareHandler } from 'hono';
 import { and, eq } from 'drizzle-orm';
@@ -8,9 +14,27 @@ import { idempotencyRecords } from '../db/schema.ts';
 import { withUserTx } from '../db/client.ts';
 import { nowMs } from '../lib/ids.ts';
 import { logger } from '../lib/logger.ts';
+import { buildAad } from '../lib/crypto/aad.ts';
+import { decrypt, encrypt, importKey } from '../lib/crypto/aes_gcm.ts';
+import { serializeBlob, deserializeBlob } from '../lib/crypto/serialize.ts';
+import { kms } from '../adapters/kms/internal_api.ts';
 import type { RequestContext } from '../types/domain.ts';
 
 const IDEM_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Encrypt with a dedicated AAD record-type so an idempotency cipher
+// can't be replayed into an objects-body decrypt path or vice versa.
+function idemAad(userId: string, idemKey: string): Uint8Array {
+  // Reuse buildAad shape: recordType|ownerId|objectId|kind:subtype.
+  // Map onto the same template but with kind='idem'/subtype=idemKey.
+  return buildAad({
+    recordType: 'object-revisions', // closest neutral existing record type
+    ownerId: userId,
+    objectId: 'idempotency',
+    kind: 'memo',
+    subtype: idemKey,
+  });
+}
 
 export const idempotency: MiddlewareHandler = async (c, next) => {
   const idemKey = c.req.header('idempotency-key');
@@ -44,33 +68,49 @@ export const idempotency: MiddlewareHandler = async (c, next) => {
     if (cached.expiresAt < nowMs()) {
       logger.debug({ idemKey }, 'idem record expired, re-executing');
     } else if (cached.responseBody && cached.responseStatus) {
-      const text = Buffer.from(cached.responseBody).toString('utf8');
-      return new Response(text, {
-        status: cached.responseStatus,
-        headers: {
-          'content-type': 'application/json',
-          'x-idempotent-replay': 'true',
-        },
-      });
+      // F-5: decrypt the cached body with the caller's DEK.
+      try {
+        const dek = await kms().resolveUserDek(ctx.userId, ctx.requestId);
+        const key = await importKey(dek);
+        const blob = deserializeBlob(new Uint8Array(cached.responseBody));
+        const plain = await decrypt(key, blob, idemAad(ctx.userId, idemKey));
+        const text = new TextDecoder().decode(plain);
+        return new Response(text, {
+          status: cached.responseStatus,
+          headers: {
+            'content-type': 'application/json',
+            'x-idempotent-replay': 'true',
+          },
+        });
+      } catch (e) {
+        logger.warn({ err: e, idemKey }, 'idempotent replay decrypt failed; re-executing');
+      }
     }
   }
 
   await next();
 
-  // 2. Cache successful 2xx responses only
+  // 2. Cache successful 2xx responses only — encrypted.
   const status = c.res.status;
   if (status >= 200 && status < 300) {
     try {
       const cloned = c.res.clone();
       const text = await cloned.text();
-      const buf = new Uint8Array(Buffer.from(text, 'utf8'));
+      const dek = await kms().resolveUserDek(ctx.userId, ctx.requestId);
+      const key = await importKey(dek);
+      const cipher = await encrypt(
+        key,
+        new TextEncoder().encode(text),
+        idemAad(ctx.userId, idemKey),
+      );
+      const stored = new Uint8Array(serializeBlob(cipher));
       await withUserTx(ctx.userId, ctx.requestId, async (db) => {
         await db
           .insert(idempotencyRecords)
           .values({
             userId: ctx.userId!,
             idemKey,
-            responseBody: buf,
+            responseBody: stored,
             responseStatus: status,
             createdAt: nowMs(),
             expiresAt: nowMs() + IDEM_TTL_MS,
