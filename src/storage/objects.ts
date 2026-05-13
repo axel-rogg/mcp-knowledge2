@@ -5,7 +5,7 @@
 //         and AAD = '<recordType>|<owner_id>|<id>|<kind>:<subtype>'.
 
 import { and, desc, eq, isNull, lt, sql } from 'drizzle-orm';
-import { objects, objectVectors, type ObjectRow } from '../db/schema.ts';
+import { objects, objectRevisions, objectVectors, type ObjectRow } from '../db/schema.ts';
 import { type Db, withUserTx } from '../db/client.ts';
 import { buildAad } from '../lib/crypto/aad.ts';
 import { decrypt, encrypt, importKey } from '../lib/crypto/aes_gcm.ts';
@@ -19,6 +19,23 @@ import type { ObjectKind, Visibility } from '../types/domain.ts';
 
 const INLINE_BODY_MAX = 16 * 1024;
 const R2_PREFIX = 'objects/';
+// UUID v4 hex shape — the only blob_key shape we mint. Anything else
+// inside the column is a corruption / migration error / SQL-injection-shaped
+// row that we will not dereference.
+const BLOB_KEY_SHAPE = /^objects\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(@v\d+)?$/i;
+
+/**
+ * Validate that a blob_key value is one we would have generated. Catches
+ * any path-traversal-shaped value before it's passed to the BlobStore.
+ *
+ * Throws on mismatch — callers should let the error bubble; an unexpected
+ * blob_key is a hard integrity failure, not user input.
+ */
+function assertBlobKeyShape(blobKey: string, context: string): void {
+  if (!BLOB_KEY_SHAPE.test(blobKey)) {
+    throw new Error(`refusing to dereference unexpected blob_key '${blobKey}' (${context})`);
+  }
+}
 
 export interface CreateObjectInput {
   kind: ObjectKind;
@@ -209,6 +226,71 @@ export async function createObject(input: CreateObjectInput): Promise<ObjectView
   });
 }
 
+// ─── Lookup helpers (dedup) ─────────────────────────────────────────────
+
+/**
+ * Look up an existing object by (kind, bodyHash) for the current user.
+ * Used by upstream tool layers (e.g. docs.put) to deduplicate
+ * content-addressable uploads — if the same bytes already exist, return
+ * the existing id instead of inserting a second row.
+ *
+ * RLS scopes the lookup to the caller automatically; no cross-user
+ * dedup is possible (and should not be — that would leak presence).
+ */
+export async function getObjectByBodyHash(
+  kind: ObjectKind,
+  bodyHash: string,
+): Promise<ObjectView | null> {
+  const ctx = requireContext();
+  if (!ctx.userId) throw errBadRequest('user context required');
+  return await withUserTx(ctx.userId, ctx.requestId, async (db) => {
+    const rows = await db
+      .select()
+      .from(objects)
+      .where(
+        and(eq(objects.kind, kind), eq(objects.bodyHash, bodyHash), isNull(objects.deletedAt)),
+      )
+      .limit(1);
+    return rows[0] ? rowToView(rows[0]) : null;
+  });
+}
+
+/**
+ * Look up an existing object by JSON-meta path == value, scoped to kind.
+ * Used by upstream tool layers (e.g. skills.attach_resource → find by
+ * meta_json.slug) when natural keys live in meta rather than as
+ * first-class columns.
+ *
+ * `metaPath` is a single top-level key (no dotted paths) for safety.
+ */
+export async function getObjectByMeta(
+  kind: ObjectKind,
+  metaKey: string,
+  metaValue: string,
+): Promise<ObjectView | null> {
+  const ctx = requireContext();
+  if (!ctx.userId) throw errBadRequest('user context required');
+  // Restrict the key to identifier-shape to keep this away from any
+  // sql-injection class even though we already parametrise.
+  if (!/^[a-z_][a-z0-9_]{0,63}$/i.test(metaKey)) {
+    throw errBadRequest(`invalid metaKey '${metaKey}'`);
+  }
+  return await withUserTx(ctx.userId, ctx.requestId, async (db) => {
+    const rows = await db
+      .select()
+      .from(objects)
+      .where(
+        and(
+          eq(objects.kind, kind),
+          isNull(objects.deletedAt),
+          sql`${objects.metaJson} ->> ${metaKey} = ${metaValue}`,
+        ),
+      )
+      .limit(1);
+    return rows[0] ? rowToView(rows[0]) : null;
+  });
+}
+
 // ─── Read ───────────────────────────────────────────────────────────────
 
 export interface ReadObjectOptions {
@@ -258,6 +340,7 @@ export async function readObject(
     if (row.bodyInline) {
       cipher = row.bodyInline;
     } else if (row.blobKey) {
+      assertBlobKeyShape(row.blobKey, `readObject ${row.id}`);
       const fromBlob = await blobStore().get(row.blobKey);
       if (!fromBlob) throw errNotFound('object body missing from blob store');
       cipher = fromBlob;
@@ -343,6 +426,22 @@ export async function updateObject(id: string, input: UpdateObjectInput): Promis
       updates.bodySize = input.body.length;
       updates.bodyHash = bodyHash;
       updates.currentVersion = row.currentVersion + 1;
+
+      // Persist the OLD body as a revision before we overwrite. Note: row.*
+      // here is the pre-update snapshot. Encryption details (nonce,
+      // key_version, body_inline / blob_key) carry over as-is, so the
+      // revision is decryptable with the same DEK+AAD that decoded it as
+      // the live row originally.
+      await db.insert(objectRevisions).values({
+        objectId: id,
+        version: row.currentVersion,
+        bodyInline: row.bodyInline ?? null,
+        blobKey: row.blobKey ?? null,
+        metaJson: row.metaJson ?? null,
+        nonce: row.nonce,
+        keyVersion: row.keyVersion,
+        createdAt: nowMs(),
+      });
     }
 
     const ret = await db.update(objects).set(updates).where(eq(objects.id, id)).returning();

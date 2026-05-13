@@ -11,6 +11,7 @@ import {
   updateObject,
 } from '../storage/objects.ts';
 import { addRef, listIncomingRefs, listOutgoingRefs, removeRef } from '../storage/refs.ts';
+import { listRevisions, readRevision } from '../storage/revisions.ts';
 import { addTag, listTags, removeTag } from '../storage/tags.ts';
 import { assertEmbedQuota, assertObjectQuota, releaseObjectQuota } from '../quota/check.ts';
 import { emitAudit } from '../observability/audit.ts';
@@ -223,6 +224,30 @@ export const objectsRouter = new Hono()
   .get('/objects/:id/tags', async (c) => {
     const id = c.req.param('id');
     return c.json({ tags: await listTags(id) });
+  })
+  // Revisions are populated automatically by updateObject() every time the
+  // body changes (currentVersion bumps). They are owner-only — F-6 of the
+  // 2026-05-13 audit tightened the RLS policy so a shared user can't read
+  // pre-share content.
+  .get('/objects/:id/revisions', async (c) => {
+    const id = c.req.param('id');
+    const items = await listRevisions(id);
+    return c.json({ items });
+  })
+  .get('/objects/:id/revisions/:version', async (c) => {
+    const id = c.req.param('id');
+    const versionParam = c.req.param('version');
+    const version = Number.parseInt(versionParam, 10);
+    if (!Number.isInteger(version) || version < 1) {
+      throw errBadRequest(`invalid version '${versionParam}'`);
+    }
+    const r = await readRevision(id, version);
+    return c.json({
+      object_id: r.objectId,
+      version: r.version,
+      created_at: r.createdAt,
+      body_b64: Buffer.from(r.body).toString('base64'),
+    });
   });
 
 function decodeB64(s: string): Uint8Array {

@@ -121,6 +121,81 @@ Audit logs in `audit_log` table record action + resource id, but
   user; a flood from many JWT subjects requires reverse-proxy rate
   limiting (Caddy / Cloud Run throttling).
 
+## Cross-provider deployment (mcp-approval2 on Cloudflare, mcp-knowledge2 on Fly/Hetzner/…)
+
+When the two services live on different cloud providers, four risks
+appear that don't exist in a single-provider deployment. None of them
+fundamentally break the threat model — both providers are already
+trusted parties under §"Trust boundaries" — but they're worth knowing.
+
+### Risk A — DEK in transit across two TLS terminations
+
+`POST mcp-approval2/internal/v1/dek/resolve` returns the user's raw
+32-byte DEK in the response body (Variant B from PLAN §3.3). HTTPS
+protects the bytes between the two services, but TLS is terminated
+**twice**: once at mcp-approval2's edge (e.g. Cloudflare's TLS
+terminator for Workers), once at mcp-knowledge2's load balancer (e.g.
+Fly's). Both providers therefore see the DEK in plaintext at their
+respective hop.
+
+This is a real expansion of the operator-trust surface: two providers
+now have key material visibility instead of one. It is still bounded
+by the "operator-trust" assumption in the threat model.
+
+**Hardening (production-grade):** wrap the DEK in JWE
+(ECDH-ES + A256GCM) for a mcp-knowledge2-owned recipient public key.
+mcp-approval2 encrypts → only mcp-knowledge2 can decrypt → the
+intermediate TLS hops see opaque ciphertext. Phase 5+ task; not
+implemented today.
+
+### Risk B — Service-Token is the only auth on `/v1/internal/*`
+
+Same-provider deployments can stack a network-layer allowlist on top
+of the service-token (Caddy `@allowed remote_ip {APPROVAL2_IP}`).
+Across CF Workers and Fly Free, **neither provider exposes static
+egress IPs**, so the allowlist fall back to "match anything". The
+single line of defence is the 32-byte hex `SERVICE_TOKEN` validated
+in constant time.
+
+The service-token is strong (32 bytes hex, constant-time-compare),
+but it's a single secret with no second factor. Token leak →
+internal-endpoint takeover.
+
+**Hardening:** (a) rotate `SERVICE_TOKEN` on every deploy, not on
+schedule; (b) add a per-IP rate-limit on failed-auth (~5/min → 429)
+so brute-force is unrealistic; (c) include a `caller_env` claim in
+the per-request JWT (e.g. `caller_env: 'cf-worker-prod'`) and check
+it server-side.
+
+### Risk C — Audit-correlation scattered across two log systems
+
+`request_id` is propagated header-to-header, so logical correlation
+still works. But operationally: an incident response needs access to
+two providers' log retention. There's no single-pane-of-glass.
+
+**Hardening:** ship both services' structured logs to one
+aggregator (Grafana Loki, BetterStack, Honeycomb). Out-of-scope for
+the privat-test deployment.
+
+### Risk D — DSGVO sub-processor list grows
+
+The DPA template needs to name **both** providers explicitly, with
+the data-flow diagram showing cross-provider hops. For commercial
+deployments this is real paperwork. For the privat-test (own data,
+own infra, no third-party tenants) it's purely informational.
+
+### Single-provider as the "honest" mitigation
+
+The simplest way to remove A and B entirely is to host both services
+on one provider (Hetzner CX22, both in Docker on the same internal
+network; or both on Fly inside the same private network). Internal
+service-to-service traffic never leaves the provider boundary —
+TLS-terminator visibility shrinks to one party.
+
+For the privat-test: cross-provider is acceptable. For production
+with sensitive data and a real DPA, prefer single-provider, and
+enable JWE-on-DEK if cross-provider is unavoidable.
+
 ## Audit findings explicitly accepted as documented (2026-05-13)
 
 These items came up in the security review but are intentionally not
