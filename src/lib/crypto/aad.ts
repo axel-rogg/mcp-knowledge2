@@ -10,7 +10,8 @@ import type { ObjectKind } from '../../types/domain.ts';
 
 export type RecordType =
   | 'objects'
-  | 'objects-desc'
+  // 'objects-desc' was removed alongside migration 0003. description is
+  // plaintext-only; nothing AAD-binds it.
   | 'objects-quality'
   | 'object-revisions';
 

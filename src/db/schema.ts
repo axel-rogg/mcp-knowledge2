@@ -87,29 +87,11 @@ export const objects = pgTable(
     })('nonce').notNull(),
     keyVersion: integer('key_version').notNull().default(1),
 
-    descriptionEnc: customType<{ data: Uint8Array; driverData: Buffer }>({
-      dataType() {
-        return 'bytea';
-      },
-      toDriver(v) {
-        return Buffer.from(v);
-      },
-      fromDriver(v) {
-        return new Uint8Array(v as Buffer);
-      },
-    })('description_enc'),
-    descriptionNonce: customType<{ data: Uint8Array; driverData: Buffer }>({
-      dataType() {
-        return 'bytea';
-      },
-      toDriver(v) {
-        return Buffer.from(v);
-      },
-      fromDriver(v) {
-        return new Uint8Array(v as Buffer);
-      },
-    })('description_nonce'),
-    descriptionKeyVersion: integer('description_key_version'),
+    // description / title / keywords / trigger_hints are plaintext-only
+    // (FTS-indexed). The previous description_enc/_nonce/_key_version
+    // columns were dropped in migration 0003 — they didn't add secrecy
+    // because the plaintext column sat right next to them. Sensitive
+    // payloads belong in `body` which IS encrypted (see SECURITY.md).
 
     qualityScore: integer('quality_score'),
     qualityCheckedAt: bigint('quality_checked_at', { mode: 'number' }),

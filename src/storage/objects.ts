@@ -13,7 +13,7 @@ import { uuidV4, nowMs } from '../lib/ids.ts';
 import { blobStore } from '../adapters/blob/s3.ts';
 import { kms } from '../adapters/kms/internal_api.ts';
 import { embeddingAdapter } from '../adapters/embed/vertex.ts';
-import { errBadRequest, errForbidden, errNotFound } from '../lib/errors.ts';
+import { errBadRequest, errForbidden, errNotFound, AppError } from '../lib/errors.ts';
 import { requireContext } from '../lib/context.ts';
 import type { ObjectKind, Visibility } from '../types/domain.ts';
 
@@ -153,25 +153,10 @@ export async function createObject(input: CreateObjectInput): Promise<ObjectView
     await blobStore().put(blobKey, cipher.ciphertext, { contentType: 'application/octet-stream' });
   }
 
-  // 3. description encryption (optional)
-  let descEnc: Uint8Array | null = null;
-  let descNonce: Uint8Array | null = null;
-  let descKv: number | null = null;
-  if (input.description) {
-    const descAad = buildAad({
-      recordType: 'objects-desc',
-      ownerId: ctx.userId,
-      objectId: id,
-      kind: input.kind,
-      subtype,
-    });
-    const descBlob = await encrypt(key, new TextEncoder().encode(input.description), descAad);
-    descEnc = descBlob.ciphertext;
-    descNonce = descBlob.nonce;
-    descKv = descBlob.version;
-  }
+  // F-22: description is plaintext-only (FTS-indexed). Encryption was
+  // dropped in migration 0003. Sensitive content belongs in body.
 
-  // 4. embedding (optional)
+  // 3. embedding (optional)
   let embedding: number[] | null = null;
   if (input.embed) {
     const source = composeEmbedSource(input);
@@ -204,9 +189,6 @@ export async function createObject(input: CreateObjectInput): Promise<ObjectView
         visibility: input.visibility ?? 'private',
         nonce: cipher.nonce,
         keyVersion: cipher.version,
-        descriptionEnc: descEnc,
-        descriptionNonce: descNonce,
-        descriptionKeyVersion: descKv,
         createdAt: now,
         updatedAt: now,
       })
@@ -247,6 +229,21 @@ export async function readObject(
 
     const view = rowToView(row);
     if (!opts.includeBody) return { view };
+
+    // F-1: per-user-DEK + AAD-binding to row.ownerId means only the
+    // owner can decrypt the body. RLS already lets a shared user see
+    // the metadata row, but the body cipher is encrypted under the
+    // owner's DEK, not theirs. Be explicit instead of returning a
+    // confusing decrypt-failure stacktrace. Sharing-aware body
+    // encryption (per-object DEK + share-wrapped) is a Phase-5+ topic.
+    if (row.ownerId !== ctx.userId) {
+      throw new AppError(
+        501,
+        'https://problems.knowledge2/shared-body-not-implemented',
+        'shared body decryption is not implemented; only the owner can read the body',
+        { owner_id: row.ownerId, your_id: ctx.userId },
+      );
+    }
 
     const dek = await kms().resolveUserDek(ctx.userId!, ctx.requestId);
     const key = await importKey(dek);
@@ -310,6 +307,16 @@ export async function updateObject(id: string, input: UpdateObjectInput): Promis
     if (input.expiresAt !== undefined) updates.expiresAt = input.expiresAt;
 
     if (input.body !== undefined) {
+      // F-1: same restriction as readObject — shared-write would need
+      // per-object DEK + re-wrapping to work. Block for now.
+      if (row.ownerId !== ctx.userId) {
+        throw new AppError(
+          501,
+          'https://problems.knowledge2/shared-body-not-implemented',
+          'shared body writes are not implemented; only the owner can replace the body',
+          { owner_id: row.ownerId, your_id: ctx.userId },
+        );
+      }
       const dek = await kms().resolveUserDek(ctx.userId!, ctx.requestId);
       const key = await importKey(dek);
       const aad = buildAad({

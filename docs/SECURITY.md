@@ -38,11 +38,37 @@ to their end users.
 | Layer | Algorithm | Key source | AAD |
 |---|---|---|---|
 | Object body | AES-256-GCM | Per-user DEK resolved per request from mcp-approval2 KMS (Variante B) | `objects\|<owner_id>\|<id>\|<kind>:<subtype>` |
-| Description | AES-256-GCM | same DEK | `objects-desc\|<owner_id>\|<id>\|<kind>:<subtype>` |
 | Backups | AES-256-GCM | `BACKUP_MASTER_KEY` env (rotated per deploy) | `backup\|<timestamp>` |
 
 The AAD bindings prevent ciphertext replay across users or across objects.
 Owner transfer therefore requires explicit re-encryption (Phase 5+).
+
+### Plaintext-by-design columns (F-22 from 2026-05-13 audit)
+
+The columns **`title`**, **`description`**, **`keywords_json`**, and
+**`trigger_hints`** are stored **plaintext**. They feed the FTS index
+(`tsvector` on `objects.search_tsv`) and the embedding pipeline, both of
+which require the underlying text. Encryption was previously also applied
+to `description` (`description_enc` column), but the plaintext sat in the
+same row — the encryption added no secrecy. Migration `0003` removed
+those dead columns.
+
+**Implication:** put sensitive content into `body`, which IS encrypted.
+Metadata (titles, summaries, keywords) is queryable cold-storage from the
+operator's perspective. This is the unavoidable cost of server-side
+search. Clients should be told this.
+
+### Sharing-aware body encryption (F-1 from the audit)
+
+Body decryption uses the **caller's** per-user DEK. When a user shares an
+object with another user, the recipient's DEK does not match — so a
+recipient calling `GET /v1/objects/:id?expand=body` gets a deterministic
+501 `shared-body-not-implemented`. The metadata row is still visible
+(that's what sharing means today), and the body cipher stays at rest.
+
+A per-object DEK with share-grant-side wrapping (Phase 5+) would lift this
+limitation. Until then, only the owner reads or writes the body. This is
+documented intent — not a regression to file as a bug.
 
 ## Embedding-inversion attack — residual risk
 

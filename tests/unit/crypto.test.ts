@@ -55,13 +55,13 @@ describe('aad', () => {
 
   it('handles null subtype', () => {
     const aad = buildAad({
-      recordType: 'objects-desc',
+      recordType: 'object-revisions',
       ownerId: 'u-1',
       objectId: 'o-1',
       kind: 'doc',
       subtype: null,
     });
-    expect(new TextDecoder().decode(aad)).toBe('objects-desc|u-1|o-1|doc:');
+    expect(new TextDecoder().decode(aad)).toBe('object-revisions|u-1|o-1|doc:');
   });
 });
 
