@@ -19,6 +19,13 @@ import { errBadRequest } from '../lib/errors.ts';
 
 const KIND = z.enum(['doc', 'skill', 'app', 'memo']);
 
+// Inline-body cap: 16 KB binary ≈ 22 KB base64. Any larger upload MUST go
+// through the presigned-upload pipeline (POST /v1/uploads/init) so the
+// server is not asked to materialise the entire body in memory from a
+// single JSON request. The 22 KB max here is a defense against
+// JSON-bomb-style RAM exhaustion (F-2 in the 2026-05-13 audit).
+const INLINE_BODY_INPUT_MAX_B64 = 22 * 1024;
+
 const CreateBody = z.object({
   kind: KIND,
   subtype: z.string().max(64).optional(),
@@ -27,7 +34,7 @@ const CreateBody = z.object({
   keywords: z.array(z.string().max(64)).max(64).optional(),
   trigger_hints: z.string().max(4096).optional(),
   meta: z.record(z.unknown()).optional(),
-  body_b64: z.string().min(1),
+  body_b64: z.string().min(1).max(INLINE_BODY_INPUT_MAX_B64),
   mime_type: z.string().max(256).optional(),
   filename: z.string().max(256).optional(),
   visibility: z.enum(['private', 'shared']).optional(),
@@ -40,7 +47,7 @@ const UpdateBody = z.object({
   keywords: z.array(z.string().max(64)).max(64).nullable().optional(),
   trigger_hints: z.string().max(4096).nullable().optional(),
   meta: z.record(z.unknown()).nullable().optional(),
-  body_b64: z.string().optional(),
+  body_b64: z.string().max(INLINE_BODY_INPUT_MAX_B64).optional(),
   pinned: z.boolean().optional(),
   archived: z.boolean().optional(),
   expires_at: z.number().int().nullable().optional(),

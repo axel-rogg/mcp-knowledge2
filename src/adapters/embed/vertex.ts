@@ -120,3 +120,11 @@ export function embeddingAdapter(): EmbeddingAdapter {
   if (!cached) cached = new VertexEmbeddingAdapter();
   return cached;
 }
+
+/**
+ * Override the cached embedding adapter. Tests use this to inject a
+ * deterministic stub so we don't hit a real Vertex endpoint.
+ */
+export function setEmbeddingAdapterForTest(impl: EmbeddingAdapter | null): void {
+  cached = impl;
+}

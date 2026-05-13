@@ -1,5 +1,29 @@
 import { z } from 'zod';
 
+/**
+ * Try to decode a string as base64; if that produces ≠ 32 bytes, try hex.
+ * Returns the 32-byte buffer or null on failure.
+ *
+ * Exported so runtime callers (e.g. backup.ts) decode the same shape that
+ * env-validation accepts.
+ */
+export function decodeKey(s: string): Buffer | null {
+  // Hex: 64 ascii chars, [0-9a-fA-F] only
+  if (/^[0-9a-fA-F]{64}$/.test(s)) {
+    return Buffer.from(s, 'hex');
+  }
+  // Base64 (padded or unpadded): try and validate the round-trip
+  try {
+    const b = Buffer.from(s, 'base64');
+    if (b.toString('base64').replace(/=+$/, '') === s.replace(/=+$/, '')) {
+      return b;
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
 const EnvSchema = z.object({
   PORT: z.coerce.number().int().positive().default(8080),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
@@ -34,7 +58,20 @@ const EnvSchema = z.object({
   MCP_APPROVAL_BASE_URL: z.string().url(),
   MCP_APPROVAL_INTERNAL_TOKEN: z.string().min(32),
 
-  BACKUP_MASTER_KEY: z.string().min(32),
+  // F-21: must decode to exactly 32 raw bytes for AES-256-GCM. Hex (64 ascii)
+  // and base64 (44 ascii padded) are both fine — we accept either by
+  // sniffing on shape, then validate the decoded length. Catches the common
+  // misconfiguration of "I generated a 32-char hex string" (= 16 bytes).
+  BACKUP_MASTER_KEY: z
+    .string()
+    .min(32)
+    .refine(
+      (s) => {
+        const decoded = decodeKey(s);
+        return decoded !== null && decoded.length === 32;
+      },
+      'BACKUP_MASTER_KEY must decode (base64 or hex) to exactly 32 bytes',
+    ),
   BACKUP_BUCKET: z.string().min(1).optional(),
   BACKUP_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
 });

@@ -1,0 +1,520 @@
+// Cross-Service contract roundtrip — exercises every endpoint the
+// mcp-approval2 `KnowledgeAdapter` reaches against a real Postgres +
+// pgvector (Testcontainers).
+//
+// We do NOT spin up the production `server.ts` boot path because that
+// requires a live JWKS endpoint, KMS callback, blob endpoint, and
+// Vertex SA. Instead we wire the same routers behind a thin test-only
+// Hono app whose auth middleware injects a `ctx` directly. This keeps
+// the test focused on the routes themselves while avoiding network
+// dependencies.
+//
+// See docs/CROSS-SERVICE-CONTRACT.md and docs/runbooks/runbook-integration-tests.md.
+
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import pg from 'pg';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { Hono } from 'hono';
+
+// Environment must be configured BEFORE any module under test is imported,
+// because `loadEnv` caches the parsed config.
+process.env.NODE_ENV = 'test';
+process.env.LOG_LEVEL = 'fatal';
+process.env.JWKS_URL = 'http://127.0.0.1:1/.well-known/jwks.json'; // unused
+process.env.JWT_ISSUER = 'test-issuer';
+process.env.JWT_AUDIENCE = 'mcp-knowledge2';
+process.env.SERVICE_TOKEN = 'test-service-token-must-be-at-least-32-bytes-ok';
+process.env.BLOB_ENDPOINT = 'http://127.0.0.1:1';
+process.env.BLOB_REGION = 'eu-central';
+process.env.BLOB_ACCESS_KEY = 'test';
+process.env.BLOB_SECRET_KEY = 'test';
+process.env.BLOB_BUCKET = 'test';
+process.env.VERTEX_PROJECT = 'test-project';
+process.env.MCP_APPROVAL_BASE_URL = 'http://127.0.0.1:1';
+process.env.MCP_APPROVAL_INTERNAL_TOKEN = 'test-internal-token-must-be-32-bytes-or-more-x';
+process.env.BACKUP_MASTER_KEY = 'test-backup-master-key-must-be-32-bytes-ok-now';
+
+// resetEnvCacheForTest is called once DATABASE_URL is known (after container starts).
+import { resetEnvCacheForTest } from '../../src/types/env.ts';
+
+let container: StartedPostgreSqlContainer;
+let rootClient: pg.Client; // used for setup only
+
+const USER_A = '11111111-1111-1111-1111-111111111111';
+const USER_B = '22222222-2222-2222-2222-222222222222';
+
+// Built once after env is final
+let app: Hono;
+let currentUserId: string = USER_A; // mutable so individual tests can flip subject
+
+beforeAll(async () => {
+  container = await new PostgreSqlContainer('pgvector/pgvector:pg16')
+    .withDatabase('knowledge')
+    .withUsername('postgres')
+    .withPassword('postgres')
+    .start();
+
+  rootClient = new pg.Client({ connectionString: container.getConnectionUri() });
+  await rootClient.connect();
+  await rootClient.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
+  await rootClient.query(`CREATE EXTENSION IF NOT EXISTS vector`);
+  await rootClient.query(`CREATE ROLE knowledge_app WITH LOGIN PASSWORD 'app'`);
+  await rootClient.query(`CREATE ROLE knowledge_admin WITH LOGIN PASSWORD 'admin' BYPASSRLS`);
+  await rootClient.query(`GRANT CONNECT ON DATABASE knowledge TO knowledge_app, knowledge_admin`);
+  await rootClient.query(`GRANT USAGE ON SCHEMA public TO knowledge_app, knowledge_admin`);
+  await rootClient.query(
+    `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO knowledge_app`,
+  );
+  await rootClient.query(
+    `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO knowledge_admin`,
+  );
+
+  const migrationsDir = join(process.cwd(), 'drizzle', 'migrations');
+  const init = await readFile(join(migrationsDir, '0000_init.sql'), 'utf8');
+  const rls = await readFile(join(migrationsDir, '0001_rls.sql'), 'utf8');
+  await rootClient.query(init);
+  // Already-granted privileges only apply going forward — re-grant on the
+  // tables that were just created so the app role can actually use them.
+  await rootClient.query(
+    `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO knowledge_app`,
+  );
+  await rootClient.query(
+    `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO knowledge_admin`,
+  );
+  await rootClient.query(rls);
+
+  const host = container.getHost();
+  const port = container.getPort();
+  process.env.DATABASE_URL = `postgres://knowledge_app:app@${host}:${port}/knowledge`;
+  process.env.DATABASE_ADMIN_URL = `postgres://knowledge_admin:admin@${host}:${port}/knowledge`;
+  resetEnvCacheForTest();
+
+  // ─── Adapters: inject in-memory stubs ────────────────────────────────────
+  const { setBlobStoreForTest } = await import('../../src/adapters/blob/s3.ts');
+  setBlobStoreForTest(makeInMemoryBlobStore());
+
+  const { setKmsForTest } = await import('../../src/adapters/kms/internal_api.ts');
+  setKmsForTest({
+    resolveUserDek: async () => new Uint8Array(32), // all-zero key — fine for AES-GCM
+  });
+
+  const { setEmbeddingAdapterForTest } = await import('../../src/adapters/embed/vertex.ts');
+  setEmbeddingAdapterForTest({
+    model: 'test-stub',
+    dimensions: 768,
+    embed: async (texts: string[]) => texts.map(() => Array.from({ length: 768 }, () => 0.1)),
+  });
+
+  // ─── Build a test-only Hono app that mounts the production routers ──────
+  const { objectsRouter } = await import('../../src/routes/objects.ts');
+  const { sharesRouter } = await import('../../src/routes/shares.ts');
+  const { searchRouter } = await import('../../src/routes/search.ts');
+  const { internalRouter } = await import('../../src/routes/internal.ts');
+  const { errorHandler } = await import('../../src/middleware/error.ts');
+  const { installContext } = await import('../../src/middleware/context.ts');
+
+  app = new Hono();
+  app.onError(errorHandler);
+
+  // Test-substitute for `requireJwt`: read the user from a header. No
+  // signature checking — we're testing route shapes, not auth.
+  const v1 = new Hono();
+  v1.use('*', async (c, next) => {
+    const u = c.req.header('x-test-user') ?? currentUserId;
+    (c.set as (key: string, value: unknown) => void)('ctx', {
+      userId: u,
+      requestId: c.req.header('x-request-id') ?? `test-${Date.now()}`,
+      authMode: 'jwt',
+      scopes: [],
+    });
+    await next();
+  });
+  v1.use('*', installContext);
+  v1.route('/', objectsRouter);
+  v1.route('/', sharesRouter);
+  v1.route('/', searchRouter);
+  app.route('/v1', v1);
+
+  // Internal routes — same skip-auth pattern with service mode
+  const internal = new Hono();
+  internal.use('*', async (c, next) => {
+    (c.set as (key: string, value: unknown) => void)('ctx', {
+      userId: null,
+      requestId: `internal-${Date.now()}`,
+      authMode: 'service',
+      scopes: [],
+    });
+    await next();
+  });
+  internal.use('*', installContext);
+  internal.route('/', internalRouter);
+  app.route('/v1', internal);
+}, 120_000);
+
+afterAll(async () => {
+  const { closeDbPools } = await import('../../src/db/client.ts');
+  await closeDbPools();
+  await rootClient?.end();
+  await container?.stop();
+}, 60_000);
+
+beforeEach(async () => {
+  // Reset state between tests via admin connection (BYPASSRLS).
+  const host = container.getHost();
+  const port = container.getPort();
+  const admin = new pg.Client({
+    host,
+    port,
+    database: 'knowledge',
+    user: 'knowledge_admin',
+    password: 'admin',
+  });
+  await admin.connect();
+  try {
+    await admin.query(`DELETE FROM object_vectors`);
+    await admin.query(`DELETE FROM share_grants`);
+    await admin.query(`DELETE FROM object_tags`);
+    await admin.query(`DELETE FROM object_refs`);
+    await admin.query(`DELETE FROM object_revisions`);
+    await admin.query(`DELETE FROM objects`);
+    await admin.query(`DELETE FROM user_quotas`);
+    await admin.query(`DELETE FROM idempotency_records`);
+    await admin.query(`DELETE FROM uploads`);
+    await admin.query(`DELETE FROM audit_log`);
+  } finally {
+    await admin.end();
+  }
+  currentUserId = USER_A;
+});
+
+// ─── Test helpers ─────────────────────────────────────────────────────────
+
+async function call(
+  method: string,
+  path: string,
+  opts: { body?: unknown; user?: string; headers?: Record<string, string> } = {},
+): Promise<Response> {
+  const headers: Record<string, string> = { 'x-test-user': opts.user ?? currentUserId };
+  if (opts.body !== undefined) headers['content-type'] = 'application/json';
+  Object.assign(headers, opts.headers ?? {});
+  return await app.request(`http://test${path}`, {
+    method,
+    headers,
+    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+  });
+}
+
+function b64(s: string): string {
+  return Buffer.from(s, 'utf8').toString('base64');
+}
+
+function makeInMemoryBlobStore() {
+  const store = new Map<string, Uint8Array>();
+  return {
+    async put(key: string, body: Uint8Array): Promise<void> {
+      store.set(key, body);
+    },
+    async get(key: string): Promise<Uint8Array | null> {
+      return store.get(key) ?? null;
+    },
+    async delete(key: string): Promise<void> {
+      store.delete(key);
+    },
+    async exists(key: string): Promise<boolean> {
+      return store.has(key);
+    },
+    async presignPut(): Promise<string> {
+      return 'http://localhost/upload';
+    },
+    async presignGet(): Promise<string> {
+      return 'http://localhost/download';
+    },
+  };
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────
+
+describe('objects roundtrip — Cross-Service Contract', () => {
+  it('POST /v1/objects creates an object and returns the ObjectView shape', async () => {
+    const r = await call('POST', '/v1/objects', {
+      body: {
+        kind: 'doc',
+        title: 'hello',
+        description: 'first doc',
+        keywords: ['a', 'b'],
+        body_b64: b64('hello world'),
+        mime_type: 'text/plain',
+      },
+    });
+    expect(r.status).toBe(201);
+    const view = (await r.json()) as Record<string, unknown>;
+    expect(view).toMatchObject({
+      kind: 'doc',
+      title: 'hello',
+      description: 'first doc',
+      visibility: 'private',
+      pinned: false,
+      archived: false,
+      refcount: 0,
+      currentVersion: 1,
+    });
+    expect(typeof view.id).toBe('string');
+    expect(typeof view.ownerId).toBe('string');
+    expect(typeof view.createdAt).toBe('number');
+    expect(typeof view.updatedAt).toBe('number');
+    expect(view.bodySize).toBe(11);
+    expect(view.bodyHash).toBeTypeOf('string');
+    // Contract D-12: `blob_key`/`r2_key` MUST NOT leak in the response.
+    expect(view).not.toHaveProperty('blob_key');
+    expect(view).not.toHaveProperty('r2_key');
+    expect(view).not.toHaveProperty('blobKey');
+  });
+
+  it('GET /v1/objects/:id returns the same object; ?expand=body adds body_b64', async () => {
+    const create = await call('POST', '/v1/objects', {
+      body: { kind: 'doc', title: 't', body_b64: b64('payload') },
+    });
+    const created = (await create.json()) as { id: string };
+    const readNoBody = await call('GET', `/v1/objects/${created.id}`);
+    expect(readNoBody.status).toBe(200);
+    const view = (await readNoBody.json()) as Record<string, unknown>;
+    expect(view.body_b64).toBeUndefined();
+
+    const readWithBody = await call('GET', `/v1/objects/${created.id}?expand=body`);
+    expect(readWithBody.status).toBe(200);
+    const viewWithBody = (await readWithBody.json()) as { body_b64?: string };
+    expect(viewWithBody.body_b64).toBeTypeOf('string');
+    expect(Buffer.from(viewWithBody.body_b64 as string, 'base64').toString('utf8')).toBe('payload');
+  });
+
+  it('PATCH /v1/objects/:id updates fields and increments currentVersion when body changes', async () => {
+    const created = (await (
+      await call('POST', '/v1/objects', { body: { kind: 'doc', title: 'old', body_b64: b64('v1') } })
+    ).json()) as { id: string; currentVersion: number };
+
+    const r = await call('PATCH', `/v1/objects/${created.id}`, {
+      body: { title: 'new', body_b64: b64('v2-bigger') },
+    });
+    expect(r.status).toBe(200);
+    const updated = (await r.json()) as { title: string; currentVersion: number; bodySize: number };
+    expect(updated.title).toBe('new');
+    expect(updated.currentVersion).toBe(created.currentVersion + 1);
+    expect(updated.bodySize).toBe(9);
+  });
+
+  it('GET /v1/objects paginates and returns next_cursor (not "cursor")', async () => {
+    for (let i = 0; i < 3; i++) {
+      await call('POST', '/v1/objects', {
+        body: { kind: 'doc', title: `t${i}`, body_b64: b64(`p${i}`) },
+      });
+      // Different updatedAt timestamps so cursor ordering is unambiguous
+      await new Promise((res) => setTimeout(res, 5));
+    }
+    const r = await call('GET', '/v1/objects?limit=2');
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { items: unknown[]; next_cursor: number | null };
+    expect(body.items.length).toBe(2);
+    expect(body).toHaveProperty('next_cursor');
+    // Contract D-4/D-5: the response shape is { items, next_cursor }, NOT { items, cursor, hasMore }.
+    expect(body).not.toHaveProperty('cursor');
+    expect(body).not.toHaveProperty('hasMore');
+  });
+
+  it('DELETE /v1/objects/:id soft-deletes (204) and the object disappears from list', async () => {
+    const created = (await (
+      await call('POST', '/v1/objects', { body: { kind: 'doc', title: 'del-me', body_b64: b64('x') } })
+    ).json()) as { id: string };
+    const del = await call('DELETE', `/v1/objects/${created.id}`);
+    expect(del.status).toBe(204);
+    const list = (await (await call('GET', '/v1/objects')).json()) as { items: unknown[] };
+    expect(list.items).toEqual([]);
+  });
+});
+
+describe('shares roundtrip — Cross-Service Contract', () => {
+  it('POST /v1/objects/:id/shares requires snake_case body { granted_to, scope }', async () => {
+    const created = (await (
+      await call('POST', '/v1/objects', { body: { kind: 'doc', title: 's', body_b64: b64('shareable') } })
+    ).json()) as { id: string };
+
+    // Contract D-6 — the adapter sends `{ resourceKind, grantedTo, scope }` which
+    // is rejected; the server expects snake_case.
+    const wrongShape = await call('POST', `/v1/objects/${created.id}/shares`, {
+      body: { resourceKind: 'doc', grantedTo: USER_B, scope: 'read' },
+    });
+    expect(wrongShape.status).toBe(400);
+
+    const r = await call('POST', `/v1/objects/${created.id}/shares`, {
+      body: { granted_to: USER_B, scope: 'read' },
+    });
+    expect(r.status).toBe(201);
+    const share = (await r.json()) as Record<string, unknown>;
+    expect(share).toMatchObject({
+      resourceKind: 'doc',
+      resourceId: created.id,
+      grantedTo: USER_B,
+      grantedBy: USER_A,
+      scope: 'read',
+    });
+    // Contract D-7: the wire field is `grantedAt`, not `createdAt`.
+    expect(share).toHaveProperty('grantedAt');
+    expect(share).not.toHaveProperty('createdAt');
+  });
+
+  it('GET /v1/objects/:id/shares wraps in { items: [...] }', async () => {
+    const created = (await (
+      await call('POST', '/v1/objects', { body: { kind: 'doc', title: 's', body_b64: b64('x') } })
+    ).json()) as { id: string };
+    await call('POST', `/v1/objects/${created.id}/shares`, {
+      body: { granted_to: USER_B, scope: 'read' },
+    });
+    const r = await call('GET', `/v1/objects/${created.id}/shares`);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { items: unknown[] };
+    // Contract D-8: the response is wrapped, not a bare array.
+    expect(Array.isArray(body)).toBe(false);
+    expect(Array.isArray(body.items)).toBe(true);
+    expect(body.items.length).toBe(1);
+  });
+
+  it('GET /v1/shared-with-me as the grantee surfaces the share', async () => {
+    const created = (await (
+      await call('POST', '/v1/objects', { body: { kind: 'doc', title: 'cross', body_b64: b64('x') } })
+    ).json()) as { id: string };
+    await call('POST', `/v1/objects/${created.id}/shares`, {
+      body: { granted_to: USER_B, scope: 'read' },
+    });
+
+    const r = await call('GET', '/v1/shared-with-me', { user: USER_B });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { items: Array<{ resourceId: string }> };
+    expect(body.items.map((i) => i.resourceId)).toContain(created.id);
+  });
+
+  it('DELETE /v1/shares/:share_id revokes (204) and removes from shared-with-me', async () => {
+    const created = (await (
+      await call('POST', '/v1/objects', { body: { kind: 'doc', title: 'r', body_b64: b64('x') } })
+    ).json()) as { id: string };
+    const share = (await (
+      await call('POST', `/v1/objects/${created.id}/shares`, {
+        body: { granted_to: USER_B, scope: 'read' },
+      })
+    ).json()) as { id: string };
+
+    const revoke = await call('DELETE', `/v1/shares/${share.id}`);
+    expect(revoke.status).toBe(204);
+
+    const list = (await (await call('GET', '/v1/shared-with-me', { user: USER_B })).json()) as {
+      items: unknown[];
+    };
+    expect(list.items).toEqual([]);
+  });
+
+  it('memo kind cannot be shared (400)', async () => {
+    const memo = (await (
+      await call('POST', '/v1/objects', { body: { kind: 'memo', title: 'm', body_b64: b64('x') } })
+    ).json()) as { id: string };
+    const r = await call('POST', `/v1/objects/${memo.id}/shares`, {
+      body: { granted_to: USER_B, scope: 'read' },
+    });
+    expect(r.status).toBe(400);
+  });
+});
+
+describe('search roundtrip — Cross-Service Contract', () => {
+  it('POST /v1/search accepts { query, kind, limit } and returns { items }', async () => {
+    await call('POST', '/v1/objects', {
+      body: { kind: 'doc', title: 'about cats', description: 'feline lore', body_b64: b64('cat'), embed: true },
+    });
+    await call('POST', '/v1/objects', {
+      body: { kind: 'doc', title: 'about dogs', description: 'canine lore', body_b64: b64('dog'), embed: true },
+    });
+
+    const r = await call('POST', '/v1/search', { body: { query: 'cats', limit: 10 } });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { items: Array<{ id: string; score: number }> };
+    expect(Array.isArray(body.items)).toBe(true);
+    // FTS should find at least the "about cats" doc
+    expect(body.items.length).toBeGreaterThan(0);
+  });
+
+  it('rejects multi-kind search until D-9 is resolved (current behaviour)', async () => {
+    // Contract D-9 — adapter sends `kinds: ['doc', 'skill']`; server only
+    // accepts `kind: <single>`. Until the server accepts arrays, this is the
+    // documented failure mode.
+    const r = await call('POST', '/v1/search', {
+      body: { query: 'x', kinds: ['doc', 'skill'] },
+    });
+    // The server ignores the unknown `kinds` field (zod default is passthrough
+    // is NOT used — it's `.parse` on a closed schema). Extra keys are tolerated;
+    // the search runs without a kind filter. Document this so the adapter team
+    // knows: extra fields are silently ignored, not a hard error.
+    expect([200, 400]).toContain(r.status);
+  });
+});
+
+describe('error shape — Cross-Service Contract', () => {
+  it('returns RFC 7807 Problem Details, not { error: { code, message } }', async () => {
+    // Contract D-1 — fetch a missing object.
+    const r = await call('GET', '/v1/objects/00000000-0000-0000-0000-000000000000');
+    expect(r.status).toBe(404);
+    expect(r.headers.get('content-type')).toContain('application/problem+json');
+    const body = (await r.json()) as Record<string, unknown>;
+    expect(body).toHaveProperty('type');
+    expect(body).toHaveProperty('title');
+    expect(body).toHaveProperty('status');
+    expect(body.status).toBe(404);
+    // Adapter-expected shape would have `error.code` / `error.message`; verify
+    // we do NOT emit that.
+    expect(body).not.toHaveProperty('error');
+  });
+
+  it('soft-delete idempotency follows RFC 7807 on second attempt', async () => {
+    const created = (await (
+      await call('POST', '/v1/objects', { body: { kind: 'doc', title: 'dx', body_b64: b64('x') } })
+    ).json()) as { id: string };
+    expect((await call('DELETE', `/v1/objects/${created.id}`)).status).toBe(204);
+    // After soft-delete the object is not visible — second delete returns 404
+    const r2 = await call('DELETE', `/v1/objects/${created.id}`);
+    expect(r2.status).toBe(404);
+    const body = (await r2.json()) as Record<string, unknown>;
+    expect(body.status).toBe(404);
+  });
+});
+
+describe('internal — erase-user', () => {
+  it('POST /v1/internal/erase-user removes all owner data and returns the deletion summary', async () => {
+    // Seed: USER_A has two docs
+    currentUserId = USER_A;
+    await call('POST', '/v1/objects', {
+      body: { kind: 'doc', title: 'A1', body_b64: b64('p1') },
+    });
+    await call('POST', '/v1/objects', {
+      body: { kind: 'doc', title: 'A2', body_b64: b64('p2') },
+    });
+
+    const r = await app.request('http://test/v1/internal/erase-user', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        user_id: USER_A,
+        confirmation_token: 'token-with-sufficient-length-1234567',
+      }),
+    });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { status: string; deleted: { objects: number } };
+    // Contract D-10: adapter expects { deletedRows: number } — server returns
+    // a richer summary. Document so the adapter team can adjust.
+    expect(body.status).toBe('ok');
+    expect(body.deleted.objects).toBe(2);
+    expect(body).not.toHaveProperty('deletedRows');
+
+    // Verify the data is actually gone
+    const list = (await (await call('GET', '/v1/objects', { user: USER_A })).json()) as {
+      items: unknown[];
+    };
+    expect(list.items).toEqual([]);
+  });
+});

@@ -4,8 +4,8 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { MiddlewareHandler } from 'hono';
 import { loadEnv } from '../types/env.ts';
-import { errForbidden, errUnauthorized } from '../lib/errors.ts';
-import { uuidV4 } from '../lib/ids.ts';
+import { errBadRequest, errForbidden, errUnauthorized } from '../lib/errors.ts';
+import { isUuid, uuidV4 } from '../lib/ids.ts';
 import type { RequestContext } from '../types/domain.ts';
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -29,11 +29,26 @@ export const requireServiceToken: MiddlewareHandler = async (c, next) => {
     throw errForbidden('invalid service token');
   }
 
-  // Some internal endpoints also carry an x-user-jwt acting on behalf of a user.
-  // The handler decides whether to use it. We propagate the request id.
-  const requestId = c.req.header('x-request-id') ?? uuidV4();
+  // F-9: validate headers that flow into Postgres `SET LOCAL app.current_user`
+  // and into the audit_log.request_id (UUID column). Free-form input here
+  // wouldn't be a SQL-injection (parametrised), but it would (a) trigger a
+  // Postgres cast-error inside the request handler and (b) corrupt
+  // audit-log correlation. Better to reject at the door.
+  const rawRequestId = c.req.header('x-request-id');
+  if (rawRequestId !== undefined && !isUuid(rawRequestId)) {
+    throw errBadRequest('x-request-id must be a UUID');
+  }
+  const rawActing = c.req.header('x-acting-user-id');
+  if (rawActing !== undefined && !isUuid(rawActing)) {
+    throw errBadRequest('x-acting-user-id must be a UUID');
+  }
+
+  // Some internal endpoints also carry an x-acting-user-id acting on behalf
+  // of a user. The handler decides whether to use it. We propagate the
+  // request id, generating one if absent.
+  const requestId = rawRequestId ?? uuidV4();
   const ctx: RequestContext = {
-    userId: c.req.header('x-acting-user-id') ?? null,
+    userId: rawActing ?? null,
     requestId,
     authMode: 'service',
     scopes: [],

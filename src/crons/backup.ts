@@ -6,7 +6,7 @@
 // compromise of one user's DEK does not leak the historical backups.
 
 import { spawn } from 'node:child_process';
-import { loadEnv } from '../types/env.ts';
+import { decodeKey, loadEnv } from '../types/env.ts';
 import { blobStore } from '../adapters/blob/s3.ts';
 import { encrypt, importKey } from '../lib/crypto/aes_gcm.ts';
 import { serializeBlob } from '../lib/crypto/serialize.ts';
@@ -33,12 +33,14 @@ export async function runBackup(): Promise<void> {
   }
   const dump = Buffer.concat(chunks);
 
-  // 2. Encrypt
-  const masterKey = new Uint8Array(Buffer.from(env.BACKUP_MASTER_KEY, 'base64'));
-  if (masterKey.length !== 32) {
-    logger.error({ length: masterKey.length }, 'BACKUP_MASTER_KEY must decode to 32 bytes');
+  // 2. Encrypt. The env validator already guaranteed BACKUP_MASTER_KEY
+  //    decodes to 32 bytes — both base64 and hex shapes are accepted.
+  const decoded = decodeKey(env.BACKUP_MASTER_KEY);
+  if (!decoded || decoded.length !== 32) {
+    logger.error({ length: decoded?.length ?? 0 }, 'BACKUP_MASTER_KEY decode failed');
     return;
   }
+  const masterKey = new Uint8Array(decoded);
   const key = await importKey(masterKey);
   const aad = new TextEncoder().encode(`backup|${ts}`);
   const cipher = await encrypt(key, new Uint8Array(dump), aad);

@@ -99,3 +99,12 @@ export function blobStore(): BlobStore {
   if (!cachedBlobStore) cachedBlobStore = new S3BlobStore();
   return cachedBlobStore;
 }
+
+/**
+ * Override the cached blob-store. Tests use this to inject an in-memory
+ * implementation so we don't need a live S3 endpoint to roundtrip
+ * objects whose ciphertext exceeds the 16 KB inline cap.
+ */
+export function setBlobStoreForTest(impl: BlobStore | null): void {
+  cachedBlobStore = impl;
+}

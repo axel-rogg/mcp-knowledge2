@@ -1,8 +1,12 @@
 openapi: 3.1.0
 info:
   title: mcp-knowledge2
-  version: 0.1.0
-  description: Storage + sharing + hybrid-search service for the mcp-approval2 ecosystem.
+  version: 0.2.0
+  description: |
+    Storage + sharing + hybrid-search service for the mcp-approval2 ecosystem.
+
+    See `docs/CROSS-SERVICE-CONTRACT.md` for the current drift catalogue between
+    this spec and what the mcp-approval2 `KnowledgeAdapter` expects.
 servers:
   - url: https://knowledge.firma.invalid/v1
     description: production
@@ -76,14 +80,40 @@ components:
         expiresAt: { type: integer, nullable: true }
         revokedAt: { type: integer, nullable: true }
     ProblemDetail:
+      description: |
+        RFC 7807 Problem Details. Returned on every 4xx/5xx response with
+        Content-Type `application/problem+json`. The mcp-approval2
+        `KnowledgeAdapter` currently expects `{ error: { code, message } }`;
+        see Cross-Service-Contract drift D-1.
       type: object
       required: [type, title, status]
       properties:
-        type: { type: string }
+        type: { type: string, description: 'URI reference for the problem class' }
         title: { type: string }
         status: { type: integer }
         detail: { type: string }
-        instance: { type: string }
+        instance: { type: string, description: 'request id, for correlation' }
+    EraseUserRequest:
+      type: object
+      required: [user_id, confirmation_token]
+      properties:
+        user_id: { type: string, format: uuid }
+        confirmation_token: { type: string, minLength: 16 }
+    EraseUserResult:
+      type: object
+      required: [status, deleted]
+      properties:
+        status: { type: string, enum: [ok] }
+        deleted:
+          type: object
+          required: [objects, shares, idempotency, uploads, blobs_deleted, blobs_pending]
+          properties:
+            objects: { type: integer }
+            shares: { type: integer }
+            idempotency: { type: integer }
+            uploads: { type: integer }
+            blobs_deleted: { type: integer }
+            blobs_pending: { type: integer }
 security:
   - bearer: []
 paths:
@@ -259,6 +289,10 @@ paths:
   /search:
     post:
       summary: Hybrid (FTS + vector) search
+      description: |
+        Note: only a single `kind` is supported today (Cross-Service-Contract
+        drift D-9). The adapter sends `kinds: string[]`; that field is
+        silently ignored. Multi-kind filtering is a queued follow-up.
       requestBody:
         required: true
         content:
@@ -282,12 +316,15 @@ paths:
                     type: array
                     items:
                       type: object
+                      required: [id, kind, score]
                       properties:
                         id: { type: string, format: uuid }
                         kind: { $ref: '#/components/schemas/ObjectKind' }
                         subtype: { type: string, nullable: true }
                         title: { type: string, nullable: true }
                         score: { type: number }
+                        ftsRank: { type: number, nullable: true }
+                        vectorScore: { type: number, nullable: true }
   /uploads/init:
     post:
       summary: Reserve a presigned upload
@@ -310,3 +347,29 @@ paths:
                   upload_id: { type: string, format: uuid }
                   presigned_url: { type: string, format: uri }
                   expires_at: { type: integer }
+  /internal/erase-user:
+    post:
+      summary: 'Admin: cascade-delete all data for a user (GDPR Article 17)'
+      description: |
+        Service-Token authentication (NOT user JWT). The caller must provide
+        an out-of-band `confirmation_token` previously minted by
+        mcp-approval2. The adapter contract drift D-10 documents how the
+        mcp-approval2 `eraseUser` adapter call should be adjusted to match.
+      security:
+        - bearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EraseUserRequest' }
+      responses:
+        '200':
+          description: cascade complete
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EraseUserResult' }
+        '401':
+          description: missing/invalid service token
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetail' }

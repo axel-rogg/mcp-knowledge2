@@ -7,8 +7,15 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import type { MiddlewareHandler } from 'hono';
 import { loadEnv } from '../types/env.ts';
 import { errUnauthorized } from '../lib/errors.ts';
+import { logger } from '../lib/logger.ts';
 import type { AuthMode, RequestContext } from '../types/domain.ts';
 import { uuidV4 } from '../lib/ids.ts';
+
+// F-14: explicit signature-algorithm whitelist. Without this, jose accepts
+// whatever the JWKS-set advertises — including weaker algorithms like
+// HS256 if mcp-approval2's JWKS ever leaks a symmetric key entry by
+// mistake. Pin to asymmetric algorithms only.
+const ALLOWED_JWT_ALGORITHMS = ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'EdDSA'] as const;
 
 let cachedJwks: ReturnType<typeof createRemoteJWKSet> | null = null;
 let cachedJwksUrl: string | null = null;
@@ -37,13 +44,19 @@ export async function verifyServiceJwt(token: string): Promise<JwtClaims> {
     const { payload } = await jwtVerify(token, jwks(), {
       issuer: env.JWT_ISSUER,
       audience: env.JWT_AUDIENCE,
+      algorithms: [...ALLOWED_JWT_ALGORITHMS],
     });
     if (!payload.sub) {
       throw errUnauthorized('jwt missing sub claim');
     }
     return payload as JwtClaims;
   } catch (e) {
-    throw errUnauthorized(`jwt verification failed: ${(e as Error).message}`);
+    // F-15: keep the specific jose error in logs (signature failure vs.
+    // expired vs. bad audience helps debugging), but return a generic
+    // message to the client so we don't help token-forgers triangulate
+    // which check failed.
+    logger.warn({ err: { name: (e as Error).name, msg: (e as Error).message } }, 'jwt verify failed');
+    throw errUnauthorized('jwt verification failed');
   }
 }
 

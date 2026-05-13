@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
 import { loadEnv } from './types/env.ts';
@@ -35,6 +36,27 @@ app.use('*', async (c, next) => {
 
 app.use('*', requestLog);
 app.use('*', cors({ origin: '*', credentials: false, maxAge: 86400 }));
+
+// F-2 hardening: any single JSON request body capped at 64 KB. Large
+// uploads MUST use the presigned-upload pipeline (POST /v1/uploads/init).
+// 64 KB is plenty for inline-body (≤16 KB) plus metadata.
+app.use(
+  '*',
+  bodyLimit({
+    maxSize: 64 * 1024,
+    onError: (c) =>
+      c.json(
+        {
+          type: 'https://problems.knowledge2/body-too-large',
+          title: 'Request body too large',
+          status: 413,
+          detail: 'request body exceeded 64 KB; use /v1/uploads for large payloads',
+        },
+        413,
+        { 'content-type': 'application/problem+json' },
+      ),
+  }),
+);
 
 app.onError(errorHandler);
 app.notFound((c) =>
