@@ -1,0 +1,28 @@
+{
+  email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+  encode zstd gzip
+
+  # Internal endpoints only from approval2 IP range
+  @internal path /v1/internal/*
+  handle @internal {
+    @allowed remote_ip {$APPROVAL2_IP_ALLOWLIST}
+    handle @allowed {
+      reverse_proxy app:8080
+    }
+    handle {
+      respond "Forbidden" 403
+    }
+  }
+
+  reverse_proxy app:8080 {
+    header_up X-Real-IP {http.request.remote.host}
+  }
+
+  log {
+    output stdout
+    format json
+  }
+}

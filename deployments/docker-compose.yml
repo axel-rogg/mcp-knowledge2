@@ -1,0 +1,82 @@
+name: mcp-knowledge2
+
+services:
+  app:
+    image: ghcr.io/axel-rogg/mcp-knowledge2:${IMAGE_TAG:-latest}
+    environment:
+      PORT: "8080"
+      LOG_LEVEL: info
+      NODE_ENV: production
+      DATABASE_URL: postgres://knowledge_app:${DB_APP_PASSWORD}@postgres:5432/knowledge
+      DATABASE_ADMIN_URL: postgres://knowledge_admin:${DB_ADMIN_PASSWORD}@postgres:5432/knowledge
+      DATABASE_POOL_MAX: "20"
+      JWKS_URL: ${JWKS_URL}
+      JWT_ISSUER: ${JWT_ISSUER}
+      JWT_AUDIENCE: ${JWT_AUDIENCE}
+      JWKS_CACHE_TTL_SECONDS: "86400"
+      SERVICE_TOKEN: ${SERVICE_TOKEN}
+      BLOB_ENDPOINT: ${BLOB_ENDPOINT}
+      BLOB_REGION: ${BLOB_REGION}
+      BLOB_ACCESS_KEY: ${BLOB_ACCESS_KEY}
+      BLOB_SECRET_KEY: ${BLOB_SECRET_KEY}
+      BLOB_BUCKET: ${BLOB_BUCKET}
+      BLOB_PATH_STYLE: ${BLOB_PATH_STYLE:-true}
+      VERTEX_PROJECT: ${VERTEX_PROJECT}
+      VERTEX_LOCATION: ${VERTEX_LOCATION}
+      VERTEX_MODEL: ${VERTEX_MODEL:-text-embedding-005}
+      VERTEX_SERVICE_ACCOUNT_JSON_PATH: /etc/secrets/vertex-sa.json
+      MCP_APPROVAL_BASE_URL: ${MCP_APPROVAL_BASE_URL}
+      MCP_APPROVAL_INTERNAL_TOKEN: ${MCP_APPROVAL_INTERNAL_TOKEN}
+      BACKUP_MASTER_KEY: ${BACKUP_MASTER_KEY}
+      BACKUP_BUCKET: ${BACKUP_BUCKET}
+      BACKUP_RETENTION_DAYS: "30"
+    secrets:
+      - vertex_sa
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_ROOT_PASSWORD}
+      POSTGRES_DB: knowledge
+      KNOWLEDGE_APP_PASSWORD: ${DB_APP_PASSWORD}
+      KNOWLEDGE_ADMIN_PASSWORD: ${DB_ADMIN_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./postgres-init-prod.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d knowledge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [app]
+    restart: unless-stopped
+
+secrets:
+  vertex_sa:
+    file: ../secrets/vertex-sa.json
+
+volumes:
+  pg_data:
+  caddy_data:
+  caddy_config:

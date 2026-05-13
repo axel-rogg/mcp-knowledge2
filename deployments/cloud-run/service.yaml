@@ -1,0 +1,66 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: mcp-knowledge2
+  annotations:
+    run.googleapis.com/ingress: internal-and-cloud-load-balancing
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/cloudsql-instances: PROJECT:europe-west4:knowledge
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "10"
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      serviceAccountName: knowledge-runtime@PROJECT.iam.gserviceaccount.com
+      timeoutSeconds: 60
+      containers:
+        - image: europe-docker.pkg.dev/PROJECT/containers/mcp-knowledge2:LATEST
+          ports:
+            - containerPort: 8080
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          env:
+            - name: PORT
+              value: "8080"
+            - name: NODE_ENV
+              value: production
+            - name: DATABASE_URL
+              value: "postgres:///knowledge?host=/cloudsql/PROJECT:europe-west4:knowledge"
+            - name: DATABASE_ADMIN_URL
+              valueFrom:
+                secretKeyRef: { name: knowledge-db-admin-url, key: latest }
+            - name: SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef: { name: knowledge-service-token, key: latest }
+            - name: JWKS_URL
+              value: "https://approval.firma.invalid/.well-known/jwks.json"
+            - name: JWT_ISSUER
+              value: mcp-approval2
+            - name: JWT_AUDIENCE
+              value: mcp-knowledge2
+            - name: BLOB_ENDPOINT
+              value: "https://storage.googleapis.com"
+            - name: BLOB_BUCKET
+              value: knowledge-eu
+            - name: BLOB_REGION
+              value: europe-west4
+            - name: BLOB_PATH_STYLE
+              value: "false"
+            - name: VERTEX_PROJECT
+              value: PROJECT
+            - name: VERTEX_LOCATION
+              value: europe-west4
+            - name: MCP_APPROVAL_BASE_URL
+              value: "https://approval.firma.invalid"
+            - name: MCP_APPROVAL_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: knowledge-approval-token, key: latest }
+            - name: BACKUP_MASTER_KEY
+              valueFrom:
+                secretKeyRef: { name: knowledge-backup-master, key: latest }
+            - name: BACKUP_BUCKET
+              value: knowledge-backup-eu

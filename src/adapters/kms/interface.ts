@@ -1,0 +1,17 @@
+// KMS — resolves per-user DEKs (Data Encryption Keys).
+//
+// Variant B (decided): mcp-knowledge2 calls mcp-approval2's internal API.
+// mcp-approval2 unwraps the DEK from OpenBao Transit-Engine using the
+// user's KEK and returns the raw DEK bytes. The DEK stays request-scoped
+// in mcp-knowledge2 memory only — never persisted.
+
+export interface KmsProvider {
+  /**
+   * Resolve the user's current DEK for object operations.
+   *
+   * @param userId - user UUID (from JWT sub)
+   * @param requestId - propagated request id for cross-service audit
+   * @returns 32-byte raw key (AES-256-GCM input)
+   */
+  resolveUserDek(userId: string, requestId: string): Promise<Uint8Array>;
+}

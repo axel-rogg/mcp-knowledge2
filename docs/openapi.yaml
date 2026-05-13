@@ -1,0 +1,312 @@
+openapi: 3.1.0
+info:
+  title: mcp-knowledge2
+  version: 0.1.0
+  description: Storage + sharing + hybrid-search service for the mcp-approval2 ecosystem.
+servers:
+  - url: https://knowledge.firma.invalid/v1
+    description: production
+  - url: http://localhost:8080/v1
+    description: dev
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ObjectKind:
+      type: string
+      enum: [doc, skill, app, memo]
+    SharePermission:
+      type: string
+      enum: [read, write]
+    ObjectView:
+      type: object
+      required: [id, ownerId, kind, bodySize, visibility, pinned, archived, refcount, currentVersion, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        ownerId: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/ObjectKind' }
+        subtype: { type: string, nullable: true }
+        title: { type: string, nullable: true }
+        description: { type: string, nullable: true }
+        keywords: { type: array, items: { type: string }, nullable: true }
+        triggerHints: { type: string, nullable: true }
+        meta: { type: object, additionalProperties: true, nullable: true }
+        bodySize: { type: integer }
+        bodyHash: { type: string, nullable: true }
+        mimeType: { type: string, nullable: true }
+        filename: { type: string, nullable: true }
+        visibility: { type: string, enum: [private, shared] }
+        pinned: { type: boolean }
+        archived: { type: boolean }
+        refcount: { type: integer }
+        currentVersion: { type: integer }
+        createdAt: { type: integer }
+        updatedAt: { type: integer }
+        lastUsedAt: { type: integer, nullable: true }
+    CreateObjectRequest:
+      type: object
+      required: [kind, body_b64]
+      properties:
+        kind: { $ref: '#/components/schemas/ObjectKind' }
+        subtype: { type: string }
+        title: { type: string }
+        description: { type: string }
+        keywords: { type: array, items: { type: string } }
+        trigger_hints: { type: string }
+        meta: { type: object, additionalProperties: true }
+        body_b64: { type: string, format: byte }
+        mime_type: { type: string }
+        filename: { type: string }
+        visibility: { type: string, enum: [private, shared] }
+        embed: { type: boolean }
+    ShareView:
+      type: object
+      required: [id, resourceKind, resourceId, grantedTo, grantedBy, scope, grantedAt]
+      properties:
+        id: { type: string, format: uuid }
+        resourceKind: { type: string, enum: [doc, skill, app] }
+        resourceId: { type: string, format: uuid }
+        grantedTo: { type: string, format: uuid }
+        grantedBy: { type: string, format: uuid }
+        scope: { $ref: '#/components/schemas/SharePermission' }
+        grantedAt: { type: integer }
+        expiresAt: { type: integer, nullable: true }
+        revokedAt: { type: integer, nullable: true }
+    ProblemDetail:
+      type: object
+      required: [type, title, status]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+security:
+  - bearer: []
+paths:
+  /objects:
+    get:
+      summary: List visible objects (owner + shared)
+      parameters:
+        - in: query
+          name: kind
+          schema: { $ref: '#/components/schemas/ObjectKind' }
+        - in: query
+          name: subtype
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100 }
+        - in: query
+          name: cursor
+          schema: { type: integer }
+      responses:
+        '200':
+          description: page of objects
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/ObjectView' } }
+                  next_cursor: { type: integer, nullable: true }
+    post:
+      summary: Create a new object
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateObjectRequest' }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ObjectView' }
+        '429':
+          description: quota exceeded
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetail' }
+  /objects/{id}:
+    get:
+      summary: Read object
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: expand
+          schema: { type: string, description: 'csv of body|refs|tags' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ObjectView'
+                  - type: object
+                    properties:
+                      body_b64: { type: string, format: byte }
+    patch:
+      summary: Update object (owner or shared-with-write)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string, nullable: true }
+                description: { type: string, nullable: true }
+                keywords: { type: array, items: { type: string }, nullable: true }
+                trigger_hints: { type: string, nullable: true }
+                meta: { type: object, additionalProperties: true, nullable: true }
+                body_b64: { type: string, format: byte }
+                pinned: { type: boolean }
+                archived: { type: boolean }
+                expires_at: { type: integer, nullable: true }
+                expected_version: { type: integer, minimum: 1 }
+                re_embed: { type: boolean }
+      responses:
+        '200':
+          description: updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ObjectView' }
+    delete:
+      summary: Soft-delete (owner only)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: deleted }
+  /objects/{id}/shares:
+    post:
+      summary: Share resource with another user
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [granted_to, scope]
+              properties:
+                granted_to: { type: string, format: uuid }
+                scope: { $ref: '#/components/schemas/SharePermission' }
+                expires_at: { type: integer, nullable: true }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShareView' }
+    get:
+      summary: List shares of a resource (owner only)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/ShareView' } }
+  /shares/{share_id}:
+    delete:
+      summary: Revoke a share
+      parameters:
+        - in: path
+          name: share_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: revoked }
+  /shared-with-me:
+    get:
+      summary: List shares granted to the current user
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/ShareView' } }
+  /search:
+    post:
+      summary: Hybrid (FTS + vector) search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: { type: string }
+                kind: { $ref: '#/components/schemas/ObjectKind' }
+                limit: { type: integer, minimum: 1, maximum: 50 }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        kind: { $ref: '#/components/schemas/ObjectKind' }
+                        subtype: { type: string, nullable: true }
+                        title: { type: string, nullable: true }
+                        score: { type: number }
+  /uploads/init:
+    post:
+      summary: Reserve a presigned upload
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content_type: { type: string }
+                meta: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upload_id: { type: string, format: uuid }
+                  presigned_url: { type: string, format: uri }
+                  expires_at: { type: integer }
