@@ -71,19 +71,28 @@ beforeAll(async () => {
     `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO knowledge_admin`,
   );
 
+  // Apply ALL SQL migrations in lexical order, with a re-grant pass
+  // after each file so new tables get the right GRANTs (default
+  // privileges only apply to objects created *after* the ALTER).
+  const { readdir } = await import('node:fs/promises');
   const migrationsDir = join(process.cwd(), 'drizzle', 'migrations');
-  const init = await readFile(join(migrationsDir, '0000_init.sql'), 'utf8');
-  const rls = await readFile(join(migrationsDir, '0001_rls.sql'), 'utf8');
-  await rootClient.query(init);
-  // Already-granted privileges only apply going forward — re-grant on the
-  // tables that were just created so the app role can actually use them.
-  await rootClient.query(
-    `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO knowledge_app`,
-  );
-  await rootClient.query(
-    `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO knowledge_admin`,
-  );
-  await rootClient.query(rls);
+  const files = (await readdir(migrationsDir)).filter((f) => f.endsWith('.sql')).sort();
+  for (const file of files) {
+    const sql = await readFile(join(migrationsDir, file), 'utf8');
+    await rootClient.query(sql);
+    await rootClient.query(
+      `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO knowledge_app`,
+    );
+    await rootClient.query(
+      `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO knowledge_admin`,
+    );
+    // 0001 revokes UPDATE+DELETE on audit_log from knowledge_app —
+    // re-apply that after every subsequent re-grant so the audit-log
+    // append-only contract is honoured by 0002+ as well.
+    await rootClient.query(`REVOKE UPDATE, DELETE ON audit_log FROM knowledge_app`).catch(() => {});
+    // 0004 explicitly revokes from knowledge_app on blob_deletion_queue.
+    await rootClient.query(`REVOKE ALL ON blob_deletion_queue FROM knowledge_app`).catch(() => {});
+  }
 
   const host = container.getHost();
   const port = container.getPort();
