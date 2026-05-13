@@ -1,0 +1,31 @@
+name: smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+
+jobs:
+  smoke-prod:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: smoke against production
+        env:
+          BASE_URL: ${{ secrets.PROD_BASE_URL }}
+          JWT: ${{ secrets.SMOKE_TEST_JWT }}
+        run: |
+          bash scripts/smoke.sh
+
+      - name: open issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `smoke failure ${new Date().toISOString().split('T')[0]}`,
+              labels: ['smoke-failure'],
+              body: `Smoke test failed at ${new Date().toISOString()}.\n\nSee run: ${context.payload.repository.html_url}/actions/runs/${context.runId}`,
+            });
