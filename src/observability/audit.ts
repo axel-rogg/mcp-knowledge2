@@ -24,6 +24,8 @@ export async function emitAudit(event: AuditEventInput): Promise<void> {
           requestId: ctx.requestId,
           result: event.result,
           details: event.details ?? null,
+          viaProxy: ctx.viaProxy ?? false,
+          approvalId: ctx.approvalId ?? null,
         });
       });
       return;
@@ -38,6 +40,8 @@ export async function emitAudit(event: AuditEventInput): Promise<void> {
         requestId: ctx.requestId,
         result: event.result,
         details: event.details ?? null,
+        viaProxy: ctx.viaProxy ?? false,
+        approvalId: ctx.approvalId ?? null,
       });
     });
   } catch (e) {

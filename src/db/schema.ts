@@ -229,6 +229,9 @@ export const auditLog = pgTable(
     requestId: uuid('request_id'),
     result: text('result').notNull(),
     details: jsonb('details'),
+    // AS-3 K12: proxy-vs-direct provenance + approval correlation.
+    viaProxy: boolean('via_proxy').notNull().default(false),
+    approvalId: uuid('approval_id'),
   },
   (t) => ({
     actorTs: index('idx_audit_actor_ts').on(t.actorUserId, t.ts),

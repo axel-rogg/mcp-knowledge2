@@ -8,7 +8,7 @@ export type SharePermission = 'read' | 'write';
 
 export type SharedResourceKind = 'doc' | 'skill' | 'app';
 
-export type AuthMode = 'jwt' | 'service';
+export type AuthMode = 'jwt' | 'service' | 'on_behalf_of';
 
 export interface RequestContext {
   /** authenticated user id (UUID) — null only for service-token-internal endpoints */
@@ -18,6 +18,10 @@ export interface RequestContext {
   authMode: AuthMode;
   /** JWT scopes (e.g. 'docs:write skills:read') — split into array */
   scopes: string[];
+  /** AS-3 K12: true when authenticated via approval2 OBO pattern */
+  viaProxy?: boolean;
+  /** AS-3 K12: approval_id passed in OBO-JWT (writes require, reads may omit per K-D4) */
+  approvalId?: string;
 }
 
 export interface AuditEventInput {
