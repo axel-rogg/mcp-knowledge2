@@ -105,6 +105,14 @@ callbackRouter.get('/auth/google/callback', async (c) => {
     throw errForbidden('google account not in allowed Workspace domain');
   }
 
+  // Email-allowlist enforcement. Empty list = open. Non-empty = strict whitelist:
+  // only the listed emails may complete the OAuth callback. Defense-in-depth on
+  // top of the OAuth-app's own Test-Users list in Google Cloud Console.
+  if (env.ALLOWED_EMAILS.length > 0 && !env.ALLOWED_EMAILS.includes(id.email.toLowerCase())) {
+    logger.warn({ email: id.email }, 'login denied: email not in ALLOWED_EMAILS');
+    throw errForbidden('email not in allowed users list');
+  }
+
   const user = await provisionFromGoogleLogin({
     sub: id.sub,
     email: id.email,

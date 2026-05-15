@@ -50,6 +50,15 @@ const EnvSchema = z.object({
     .string()
     .default('')
     .transform((s) => s.split(',').map((x) => x.trim()).filter(Boolean)),
+  // Email-allowlist for OAuth-login enforcement. CSV — empty = open (any
+  // Google-verified email accepted). Non-empty = strict whitelist: only the
+  // listed emails may complete the OAuth callback. Compared lower-case after
+  // trim, to absorb Gmail-style casing. Defense-in-depth: stricter than the
+  // OAuth-app's own Test-Users list in Google Cloud Console.
+  ALLOWED_EMAILS: z
+    .string()
+    .default('')
+    .transform((s) => s.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean)),
   GOOGLE_JWKS_URL: z.string().url().default('https://www.googleapis.com/oauth2/v3/certs'),
   GOOGLE_ISSUER: z.string().default('https://accounts.google.com'),
 
