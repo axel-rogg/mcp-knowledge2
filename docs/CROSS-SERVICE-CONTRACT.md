@@ -3,6 +3,13 @@
 > **Status:** DRAFT (2026-05-13) — owner: mcp-knowledge2.
 > **Counterpart:** `mcp-approval2/packages/adapters/src/knowledge/{types,interface,http-client,errors}.ts`.
 >
+> ⚠️ **AS-3-Update (2026-05-15):** Die Auth-Sektion §3 ist durch AS-3 abgelöst.
+> Authoritative Quelle für das aktuelle Auth-Pattern (OBO-JWT + `SERVICE_TOKEN`):
+> [PLAN-as3-autonomous.md](./plans/active/PLAN-as3-autonomous.md) §2 sowie die
+> ausführbaren Verträge in `tests/contract/obo-jwt.test.ts` + `user-sync.test.ts` +
+> `mcp-tools-list.test.ts`. Die DTO-Catalogue (§4) bleibt gültig — wire-shape
+> für Objects/Shares/Search ist unverändert.
+>
 > This document is the **storage-service-side view** of what the adapter
 > caller expects vs. what this service currently delivers. Every drift is
 > listed with a proposed resolution and a clear owner (which side fixes it).
