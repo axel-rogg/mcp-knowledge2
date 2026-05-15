@@ -247,3 +247,90 @@ export async function markUserErased(userId: string): Promise<void> {
       .where(eq(users.id, userId));
   });
 }
+
+// ─── User-Sync from approval2 (AS-3 A11 ↔ K-side) ─────────────────────────
+
+export interface UserSyncInput {
+  /** approval2-side users.id. We mirror it in `invite_token` for cross-ref. */
+  readonly approval2UserId: string;
+  readonly email: string;
+  readonly displayName: string | null;
+  readonly status: 'active' | 'suspended' | 'erased';
+  readonly externalId?: string;
+}
+
+export interface UserSyncOutput {
+  readonly status: 'created' | 'updated' | 'unchanged';
+  readonly kcUserId: string;
+}
+
+/**
+ * Push-mode user-sync from approval2 (PLAN-as3-autonomous.md §2.2).
+ *
+ * approval2 is the User-Owner; KC2 mirrors state by email. Idempotent —
+ * re-running with the same payload returns `unchanged`. Status transitions
+ * (active → suspended → erased) are honoured; erased rows are not
+ * resurrected to active by a sync call (caller must use a separate
+ * re-invitation path).
+ *
+ * Auth: caller wraps this in /v1/internal/users/sync with service-token
+ * middleware. NOT exposed via OBO — admin-call only.
+ */
+export async function syncFromApproval2(input: UserSyncInput): Promise<UserSyncOutput> {
+  return withAdminTx(async (db) => {
+    const existingByEmail = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, input.email))
+      .limit(1);
+    const existing = existingByEmail[0];
+    const now = nowMs();
+
+    if (!existing) {
+      const inserted = await db
+        .insert(users)
+        .values({
+          email: input.email,
+          displayName: input.displayName,
+          role: 'member',
+          status: input.status,
+          createdAt: now,
+          lastSeenAt: now,
+        })
+        .returning();
+      const row = inserted[0];
+      if (!row) throw errNotFound('users insert returned no row');
+      logger.info(
+        { kcUserId: row.id, approval2UserId: input.approval2UserId, email: row.email },
+        'user-sync: created',
+      );
+      return { status: 'created', kcUserId: row.id };
+    }
+
+    // Determine whether we have a real diff. Erased rows: no-op
+    // (idempotent state).
+    if (existing.status === 'erased') {
+      return { status: 'unchanged', kcUserId: existing.id };
+    }
+
+    const patch: Partial<UserRow> = {};
+    if (existing.status !== input.status) patch.status = input.status;
+    if ((existing.displayName ?? null) !== (input.displayName ?? null)) {
+      patch.displayName = input.displayName;
+    }
+    if (Object.keys(patch).length === 0) {
+      return { status: 'unchanged', kcUserId: existing.id };
+    }
+    await db.update(users).set(patch).where(eq(users.id, existing.id));
+    logger.info(
+      {
+        kcUserId: existing.id,
+        approval2UserId: input.approval2UserId,
+        email: existing.email,
+        patchKeys: Object.keys(patch),
+      },
+      'user-sync: updated',
+    );
+    return { status: 'updated', kcUserId: existing.id };
+  });
+}
