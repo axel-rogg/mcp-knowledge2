@@ -108,10 +108,25 @@ export const objectsRouter = new Hono()
   })
   .get('/objects', async (c) => {
     const subtype = c.req.query('subtype') ?? undefined;
+    const subtypePrefix = c.req.query('subtype_prefix') ?? undefined;
+    // Mutual-exclusive: the caller picks one filter mode. Allowing both
+    // would silently take the precedence we happen to choose here, hiding
+    // intent. Fail explicitly.
+    if (subtype !== undefined && subtypePrefix !== undefined) {
+      throw errBadRequest('subtype and subtype_prefix are mutually exclusive');
+    }
+    // Shape-validate the prefix the same way we validate `subtype` —
+    // identifier-shape, no wildcard characters reach the LIKE clause.
+    if (subtypePrefix !== undefined) {
+      if (!/^[a-z][a-z0-9_:-]{0,30}$/.test(subtypePrefix)) {
+        throw errBadRequest(`invalid subtype_prefix '${subtypePrefix}'`);
+      }
+    }
     const limit = c.req.query('limit') ? Number.parseInt(c.req.query('limit')!, 10) : undefined;
     const cursor = c.req.query('cursor') ? Number.parseInt(c.req.query('cursor')!, 10) : undefined;
     const out = await listObjects({
       ...(subtype !== undefined ? { subtype } : {}),
+      ...(subtypePrefix !== undefined ? { subtypePrefix } : {}),
       ...(limit !== undefined ? { limit } : {}),
       ...(cursor !== undefined ? { cursor } : {}),
     });

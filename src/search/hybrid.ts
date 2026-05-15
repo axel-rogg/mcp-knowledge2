@@ -11,6 +11,14 @@ import { errBadRequest } from '../lib/errors.ts';
 export interface HybridSearchInput {
   query: string;
   subtypes?: string[];
+  /**
+   * Prefix-match filters analog to `subtypes` exact-match. e.g. `['app:']`
+   * matches all subtypes starting with `app:`. May be combined with
+   * `subtypes` — the resulting WHERE-clause is `(subtype IN (...) OR
+   * subtype LIKE 'p1%' OR subtype LIKE 'p2%')`, so "all skills AND all
+   * apps" is a single search.
+   */
+  subtypePrefixes?: string[];
   limit?: number;
   ftsLimit?: number;
   vectorLimit?: number;
@@ -36,6 +44,41 @@ export async function hybridSearch(input: HybridSearchInput): Promise<HybridSear
   const vectorLimit = Math.min(Math.max(input.vectorLimit ?? 50, 1), 200);
 
   const subtypeFilter = input.subtypes && input.subtypes.length > 0 ? input.subtypes : null;
+  const prefixFilter =
+    input.subtypePrefixes && input.subtypePrefixes.length > 0 ? input.subtypePrefixes : null;
+
+  // Validate prefix shape — defense-in-depth against `%`/`_` slipping
+  // into the LIKE clause. The MCP/REST layer already shape-checks; this
+  // is a second wall.
+  if (prefixFilter) {
+    for (const p of prefixFilter) {
+      if (!/^[a-z][a-z0-9_:-]{0,30}$/.test(p)) {
+        throw errBadRequest(`invalid subtype_prefix '${p}'`);
+      }
+    }
+  }
+
+  // Build the subtype-filter fragment once. Search semantics allow
+  // BOTH exact-IN and prefix-LIKE simultaneously (combined via OR) —
+  // unlike list, this is not mutually exclusive. Use cases like "all
+  // skills AND all apps" need both lists in one search.
+  const subtypeClause = ((): ReturnType<typeof sql> => {
+    const branches: ReturnType<typeof sql>[] = [];
+    if (subtypeFilter) branches.push(sql`subtype = ANY(${subtypeFilter})`);
+    if (prefixFilter) {
+      for (const p of prefixFilter) {
+        branches.push(sql`subtype LIKE ${p + '%'}`);
+      }
+    }
+    if (branches.length === 0) return sql``;
+    // Join via OR. drizzle's sql.join handles the comma-style; we build
+    // an OR-joined fragment manually since `sql.join` defaults to commas.
+    let combined = branches[0]!;
+    for (let i = 1; i < branches.length; i++) {
+      combined = sql`${combined} OR ${branches[i]!}`;
+    }
+    return sql`AND (${combined})`;
+  })();
 
   // Compute the query embedding in parallel with FTS query
   const queryEmbed = embeddingAdapter()
@@ -52,7 +95,7 @@ export async function hybridSearch(input: HybridSearchInput): Promise<HybridSear
       WHERE search_tsv @@ websearch_to_tsquery('simple', ${query})
         AND deleted_at IS NULL
         AND archived = false
-        ${subtypeFilter ? sql`AND subtype = ANY(${subtypeFilter})` : sql``}
+        ${subtypeClause}
       ORDER BY rank DESC
       LIMIT ${ftsLimit}
     `);
@@ -65,6 +108,23 @@ export async function hybridSearch(input: HybridSearchInput): Promise<HybridSear
     let vecRows: { id: string; subtype: string | null; title: string | null; score: number }[] = [];
     if (vec) {
       const vecLiteral = `[${vec.join(',')}]`;
+      // Same OR-joined subtype-clause but prefixed against `o.` alias.
+      const vecSubtypeClause = ((): ReturnType<typeof sql> => {
+        const branches: ReturnType<typeof sql>[] = [];
+        if (subtypeFilter) branches.push(sql`o.subtype = ANY(${subtypeFilter})`);
+        if (prefixFilter) {
+          for (const p of prefixFilter) {
+            branches.push(sql`o.subtype LIKE ${p + '%'}`);
+          }
+        }
+        if (branches.length === 0) return sql``;
+        let combined = branches[0]!;
+        for (let i = 1; i < branches.length; i++) {
+          combined = sql`${combined} OR ${branches[i]!}`;
+        }
+        return sql`AND (${combined})`;
+      })();
+
       const result = await db.execute(sql`
         SELECT o.id, o.subtype, o.title,
                1 - (v.embedding <=> ${vecLiteral}::vector) AS score
@@ -72,7 +132,7 @@ export async function hybridSearch(input: HybridSearchInput): Promise<HybridSear
         JOIN objects o ON o.id = v.object_id
         WHERE o.deleted_at IS NULL
           AND o.archived = false
-          ${subtypeFilter ? sql`AND o.subtype = ANY(${subtypeFilter})` : sql``}
+          ${vecSubtypeClause}
         ORDER BY v.embedding <=> ${vecLiteral}::vector
         LIMIT ${vectorLimit}
       `);

@@ -57,12 +57,19 @@ export class CloudflareEmbeddingAdapter implements EmbeddingAdapter {
       throw new Error('CLOUDFLARE_API_TOKEN not set');
     }
     const masked = texts.map(maskPII);
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`,
+      'content-type': 'application/json',
+    };
+    // AI Gateway "Authenticated Mode" requires an additional gateway-scoped
+    // token in `cf-aig-authorization`. No-op when unset or when bypassing
+    // the gateway (direct Workers AI URL).
+    if (env.CLOUDFLARE_AI_GATEWAY_ID && env.CLOUDFLARE_AI_GATEWAY_TOKEN) {
+      headers['cf-aig-authorization'] = `Bearer ${env.CLOUDFLARE_AI_GATEWAY_TOKEN}`;
+    }
     const r = await fetch(this.endpoint(), {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`,
-        'content-type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({ text: masked }),
     });
     if (!r.ok) {

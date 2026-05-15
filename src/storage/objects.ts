@@ -505,6 +505,17 @@ export async function restoreObject(id: string): Promise<void> {
 
 export interface ListOptions {
   subtype?: string;
+  /**
+   * Prefix-match filter for `subtype` (left-anchored `LIKE 'prefix%'`).
+   * The Postgres B-Tree index on `(owner_id, subtype)` supports this
+   * pattern shape without modification because the prefix is literal
+   * (no leading `%`).
+   *
+   * Mutually exclusive with `subtype` — the caller (REST/MCP layer)
+   * enforces 400 BAD_REQUEST. Passing both here is a programming error;
+   * we throw to make it visible early.
+   */
+  subtypePrefix?: string;
   limit?: number;
   cursor?: number; // updated_at to paginate before
 }
@@ -512,10 +523,21 @@ export interface ListOptions {
 export async function listObjects(opts: ListOptions): Promise<{ items: ObjectView[]; nextCursor: number | null }> {
   const ctx = requireContext();
   if (!ctx.userId) throw errBadRequest('user context required');
+  if (opts.subtype !== undefined && opts.subtypePrefix !== undefined) {
+    throw errBadRequest('subtype and subtypePrefix are mutually exclusive');
+  }
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
   return await withUserTx(ctx.userId, ctx.requestId, async (db) => {
     const conds = [isNull(objects.deletedAt)];
-    if (opts.subtype) conds.push(eq(objects.subtype, opts.subtype));
+    if (opts.subtype) {
+      conds.push(eq(objects.subtype, opts.subtype));
+    } else if (opts.subtypePrefix) {
+      // Left-anchored LIKE — the literal prefix lets Postgres use the
+      // B-Tree index on (owner_id, subtype). NEVER allow caller-supplied
+      // `%` or `_` in the prefix; the REST/MCP regex restricts to
+      // [a-z0-9_:-] so wildcard chars cannot reach this line.
+      conds.push(sql`${objects.subtype} LIKE ${opts.subtypePrefix + '%'}`);
+    }
     if (opts.cursor !== undefined) conds.push(lt(objects.updatedAt, opts.cursor));
 
     const rows = await db

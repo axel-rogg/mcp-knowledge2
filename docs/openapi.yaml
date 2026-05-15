@@ -121,10 +121,24 @@ paths:
   /objects:
     get:
       summary: List visible objects (owner + shared)
+      description: |
+        Optional subtype filter. Exactly-one-of: `subtype` (exact match)
+        OR `subtype_prefix` (left-anchored prefix match, e.g.
+        `subtype_prefix=app:` returns all subtypes starting with `app:`).
+        Passing both → 400 BAD_REQUEST.
       parameters:
         - in: query
           name: subtype
           schema: { $ref: '#/components/schemas/Subtype' }
+        - in: query
+          name: subtype_prefix
+          description: |
+            Left-anchored prefix-match filter on `subtype`. Mutually
+            exclusive with `subtype`. Shape: `^[a-z][a-z0-9_:-]{0,30}$`.
+          schema:
+            type: string
+            pattern: '^[a-z][a-z0-9_:-]{0,30}$'
+            maxLength: 32
         - in: query
           name: limit
           schema: { type: integer, minimum: 1, maximum: 100 }
@@ -291,6 +305,11 @@ paths:
         Post ADR-0004: filter via free-form `subtypes: string[]`
         (no enum, no DB-enforced discriminator). Empty / omitted
         `subtypes` returns hits across all subtypes.
+
+        `subtype_prefixes: string[]` adds prefix-match filters
+        (e.g. `["app:"]` for all apps). Combinable with `subtypes` —
+        both filters are joined via OR, so "all skills AND all apps"
+        is a single search request.
       requestBody:
         required: true
         content:
@@ -303,6 +322,13 @@ paths:
                 subtypes:
                   type: array
                   items: { $ref: '#/components/schemas/Subtype' }
+                subtype_prefixes:
+                  type: array
+                  maxItems: 8
+                  items:
+                    type: string
+                    pattern: '^[a-z][a-z0-9_:-]{0,30}$'
+                    maxLength: 32
                 limit: { type: integer, minimum: 1, maximum: 50 }
       responses:
         '200':

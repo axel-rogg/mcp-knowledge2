@@ -157,23 +157,34 @@ export function registerAllTools(): void {
 
   const ListInput = z.object({
     subtype: SUBTYPE.optional(),
+    // Prefix-Match: `subtype_prefix: 'app:'` matched all `app:*` subtypes.
+    // Mutually exclusive with `subtype`.
+    subtype_prefix: z.string().min(1).max(32).regex(/^[a-z][a-z0-9_:-]{0,30}$/).optional(),
     limit: z.number().int().positive().max(200).optional(),
     cursor: z.number().int().nonnegative().optional(),
   });
   registerTool({
     name: 'objects.list',
-    description: 'List objects with optional subtype filter and pagination.',
+    description:
+      'List objects with pagination. Optional subtype filter (exact-match via `subtype` OR prefix-match via `subtype_prefix`, e.g. "app:" for all apps). The two filters are mutually exclusive.',
     inputSchema: zodToJsonSchema(ListInput),
     annotations: {
       title: 'List objects',
       sensitivity: 'read',
       write: false,
-      wysiwys: { display_template: 'List {{#subtype}}{{subtype}} {{/subtype}}objects' },
+      wysiwys: {
+        display_template:
+          'List {{#subtype}}{{subtype}} {{/subtype}}{{#subtype_prefix}}{{subtype_prefix}}* {{/subtype_prefix}}objects',
+      },
     },
     handler: async (args) => {
       const input = ListInput.parse(args);
+      if (input.subtype !== undefined && input.subtype_prefix !== undefined) {
+        throw errBadRequest('subtype and subtype_prefix are mutually exclusive');
+      }
       const out = await listObjects({
         ...(input.subtype !== undefined ? { subtype: input.subtype } : {}),
+        ...(input.subtype_prefix !== undefined ? { subtypePrefix: input.subtype_prefix } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
         ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
       });
@@ -442,11 +453,16 @@ export function registerAllTools(): void {
   const SearchInput = z.object({
     query: z.string().min(1).max(2000),
     subtypes: z.array(SUBTYPE).max(16).optional(),
+    // Prefix-match filters analog to `subtypes`. Combinable — see
+    // search/hybrid.ts. Caller can request all `app:*` plus exact `skill`
+    // in one query.
+    subtype_prefixes: z.array(z.string().min(1).max(32).regex(/^[a-z][a-z0-9_:-]{0,30}$/)).max(8).optional(),
     limit: z.number().int().positive().max(50).optional(),
   });
   registerTool({
     name: 'search',
-    description: 'Hybrid search (FTS + pgvector + RRF) over the caller\'s objects. Optional `subtypes` filter to scope to one or more caller-side categories.',
+    description:
+      "Hybrid search (FTS + pgvector + RRF) over the caller's objects. Filter by `subtypes` (exact-match list) and/or `subtype_prefixes` (prefix-match list, e.g. ['app:'] for all apps). The two filters are combined via OR — combinable, not mutually exclusive.",
     inputSchema: zodToJsonSchema(SearchInput),
     annotations: {
       title: 'Search',
@@ -462,6 +478,7 @@ export function registerAllTools(): void {
       const hits = await hybridSearch({
         query: input.query,
         ...(input.subtypes !== undefined ? { subtypes: input.subtypes } : {}),
+        ...(input.subtype_prefixes !== undefined ? { subtypePrefixes: input.subtype_prefixes } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
       });
       await emitAudit({ action: 'search.hybrid', result: 'success', details: { result_count: hits.length } });

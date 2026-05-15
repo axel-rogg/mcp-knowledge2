@@ -100,6 +100,11 @@ const EnvSchema = z.object({
   CLOUDFLARE_ACCOUNT_ID: z.string().min(1).optional(),
   CLOUDFLARE_API_TOKEN: z.string().min(1).optional(),
   CLOUDFLARE_AI_GATEWAY_ID: z.string().min(1).optional(),
+  // Optional. Required only when the AI Gateway runs in "Authenticated"
+  // mode — sent as `cf-aig-authorization: Bearer <token>` in addition to
+  // the Workers-AI bearer. Without it, an Authenticated Gateway rejects
+  // every request with `10000 Authentication error`.
+  CLOUDFLARE_AI_GATEWAY_TOKEN: z.string().min(1).optional(),
   CLOUDFLARE_AI_MODEL: z.string().min(1).default('@cf/baai/bge-m3'),
 
   // AS-3 K9/K13: KMS provider selection.

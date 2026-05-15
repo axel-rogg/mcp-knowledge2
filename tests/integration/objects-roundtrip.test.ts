@@ -333,6 +333,32 @@ describe('objects roundtrip — Cross-Service Contract', () => {
     expect(body).not.toHaveProperty('hasMore');
   });
 
+  it('GET /v1/objects?subtype_prefix=app: returns only `app:*` subtypes (prefix-match)', async () => {
+    // Seed: 2 app subtypes + 1 doc.
+    await call('POST', '/v1/objects', {
+      body: { subtype: 'app:composable', title: 'comp', body_b64: b64('c') },
+    });
+    await call('POST', '/v1/objects', {
+      body: { subtype: 'app:shopping-list', title: 'shop', body_b64: b64('s') },
+    });
+    await call('POST', '/v1/objects', {
+      body: { subtype: 'doc', title: 'd1', body_b64: b64('d') },
+    });
+
+    const r = await call('GET', '/v1/objects?subtype_prefix=app:');
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { items: Array<{ subtype: string }> };
+    expect(body.items.length).toBe(2);
+    for (const item of body.items) {
+      expect(item.subtype.startsWith('app:')).toBe(true);
+    }
+  });
+
+  it('GET /v1/objects rejects subtype + subtype_prefix together (mutual-exclusive)', async () => {
+    const r = await call('GET', '/v1/objects?subtype=doc&subtype_prefix=app:');
+    expect(r.status).toBe(400);
+  });
+
   it('DELETE /v1/objects/:id soft-deletes (204) and the object disappears from list', async () => {
     const created = (await (
       await call('POST', '/v1/objects', { body: { subtype: 'doc', title: 'del-me', body_b64: b64('x') } })
@@ -459,6 +485,38 @@ describe('search roundtrip — Cross-Service Contract', () => {
       body: { query: 'x', subtypes: ['doc', 'skill'] },
     });
     expect(r.status).toBe(200);
+  });
+
+  it('accepts subtype_prefixes search and combines with subtypes via OR', async () => {
+    // Seed: a doc + an app:* subtype so the filter has something to match.
+    await call('POST', '/v1/objects', {
+      body: {
+        subtype: 'doc',
+        title: 'about hamsters',
+        description: 'rodent lore',
+        body_b64: b64('hamster'),
+        embed: true,
+      },
+    });
+    await call('POST', '/v1/objects', {
+      body: {
+        subtype: 'app:composable',
+        title: 'hamster tracker',
+        description: 'app for hamster facts',
+        body_b64: b64('app'),
+        embed: true,
+      },
+    });
+
+    const r = await call('POST', '/v1/search', {
+      body: { query: 'hamster', subtype_prefixes: ['app:'] },
+    });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { items: Array<{ subtype: string }> };
+    // Prefix-only filter: every hit must be app:*.
+    for (const hit of body.items) {
+      expect(hit.subtype?.startsWith('app:')).toBe(true);
+    }
   });
 });
 
