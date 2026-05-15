@@ -1,5 +1,14 @@
 name: mcp-knowledge2
 
+# AS-3 compose-shape. The KC2-side spec PLAN-as3-autonomous.md §1.1
+# (env_schema) is the authoritative list. Run-time invariants:
+#   - SELF_OAUTH_ISSUER must match the public hostname (Caddy vhost).
+#   - SERVICE_TOKEN must match approval2's MCP_KNOWLEDGE_SERVICE_TOKEN
+#     (rotate together; 30d cadence per A-D3).
+#   - MCP_APPROVAL_JWKS_URL is OPTIONAL — when unset KC2 runs autonomous-only,
+#     refuses approval2-OBO calls.
+#   - KMS_PROVIDER defaults to openbao for prod; flip to hkdf_local for dev.
+
 services:
   app:
     image: ghcr.io/axel-rogg/mcp-knowledge2:${IMAGE_TAG:-latest}
@@ -7,26 +16,44 @@ services:
       PORT: "8080"
       LOG_LEVEL: info
       NODE_ENV: production
+      # ── DB ───────────────────────────────────────────────────────
       DATABASE_URL: postgres://knowledge_app:${DB_APP_PASSWORD}@postgres:5432/knowledge
       DATABASE_ADMIN_URL: postgres://knowledge_admin:${DB_ADMIN_PASSWORD}@postgres:5432/knowledge
       DATABASE_POOL_MAX: "20"
-      JWKS_URL: ${JWKS_URL}
-      JWT_ISSUER: ${JWT_ISSUER}
-      JWT_AUDIENCE: ${JWT_AUDIENCE}
+      # ── AS-3 K3/K4: own DCR-OAuth-Facade ─────────────────────────
+      SELF_OAUTH_ISSUER: ${SELF_OAUTH_ISSUER}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET}
+      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI}
+      GOOGLE_HD_ALLOWLIST: ${GOOGLE_HD_ALLOWLIST:-}
       JWKS_CACHE_TTL_SECONDS: "86400"
+      # ── AS-3 K7: OBO from approval2 (optional) ───────────────────
+      # If unset, OBO middleware rejects — KC2 becomes autonomous-only.
+      MCP_APPROVAL_JWKS_URL: ${MCP_APPROVAL_JWKS_URL:-}
+      MCP_APPROVAL_ISSUER: ${MCP_APPROVAL_ISSUER:-mcp-approval2}
+      # ── Shared SERVICE_TOKEN (matches approval2 MCP_KNOWLEDGE_SERVICE_TOKEN) ──
       SERVICE_TOKEN: ${SERVICE_TOKEN}
+      # ── AS-3 K9: KMS ──────────────────────────────────────────────
+      KMS_PROVIDER: ${KMS_PROVIDER:-openbao}
+      OPENBAO_ADDR: ${OPENBAO_ADDR:-}
+      OPENBAO_TOKEN: ${OPENBAO_TOKEN:-}
+      OPENBAO_TRANSIT_PATH: ${OPENBAO_TRANSIT_PATH:-transit}
+      KMS_MASTER_KEY_B64: ${KMS_MASTER_KEY_B64:-}
+      # ── Blob (S3-API) ─────────────────────────────────────────────
       BLOB_ENDPOINT: ${BLOB_ENDPOINT}
       BLOB_REGION: ${BLOB_REGION}
       BLOB_ACCESS_KEY: ${BLOB_ACCESS_KEY}
       BLOB_SECRET_KEY: ${BLOB_SECRET_KEY}
       BLOB_BUCKET: ${BLOB_BUCKET}
       BLOB_PATH_STYLE: ${BLOB_PATH_STYLE:-true}
+      # ── Vertex Embedding-Provider ─────────────────────────────────
+      # text-multilingual-embedding-002 is default per user preference
+      # (multilingual content; see CLAUDE.md user-memory).
       VERTEX_PROJECT: ${VERTEX_PROJECT}
       VERTEX_LOCATION: ${VERTEX_LOCATION}
-      VERTEX_MODEL: ${VERTEX_MODEL:-text-embedding-005}
+      VERTEX_MODEL: ${VERTEX_MODEL:-text-multilingual-embedding-002}
       VERTEX_SERVICE_ACCOUNT_JSON_PATH: /etc/secrets/vertex-sa.json
-      MCP_APPROVAL_BASE_URL: ${MCP_APPROVAL_BASE_URL}
-      MCP_APPROVAL_INTERNAL_TOKEN: ${MCP_APPROVAL_INTERNAL_TOKEN}
+      # ── Backup (also encrypts signing_keys at rest, K1) ──────────
       BACKUP_MASTER_KEY: ${BACKUP_MASTER_KEY}
       BACKUP_BUCKET: ${BACKUP_BUCKET}
       BACKUP_RETENTION_DAYS: "30"
