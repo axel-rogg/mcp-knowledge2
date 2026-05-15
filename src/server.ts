@@ -17,6 +17,8 @@ import { searchRouter } from './routes/search.ts';
 import { uploadsRouter } from './routes/uploads.ts';
 import { internalRouter } from './routes/internal.ts';
 import { oauthFacadeRouter } from './auth/oauth_facade/index.ts';
+import { mcpRouter } from './mcp/server.ts';
+import { registerAllTools } from './mcp/register_tools.ts';
 import { startCrons, stopCrons } from './crons/runner.ts';
 import { closeDbPools } from './db/client.ts';
 import { httpRequestCounter, httpRequestDuration } from './observability/metrics.ts';
@@ -100,6 +102,11 @@ internal.use('*', installContext);
 internal.route('/', internalRouter);
 
 app.route('/v1', internal);
+
+// ─── MCP Streamable-HTTP (AS-3 K10) ────────────────────────────────────────
+// Tools are registered on import — see register_tools.ts (K11).
+registerAllTools();
+app.route('/', mcpRouter);
 
 // ─── Bootstrap ─────────────────────────────────────────────────────────────
 async function main() {
