@@ -5,8 +5,13 @@
 import { Hono } from 'hono';
 import { discoveryRouter } from './discovery.ts';
 import { dcrRouter } from './dcr.ts';
+import { authorizeRouter } from './authorize.ts';
+import { callbackRouter } from './callback.ts';
+import { tokenRouter } from './token.ts';
 
 export const oauthFacadeRouter = new Hono();
 oauthFacadeRouter.route('/', discoveryRouter);
 oauthFacadeRouter.route('/', dcrRouter);
-// K4: authorize + callback + token routers will be mounted here.
+oauthFacadeRouter.route('/', authorizeRouter);
+oauthFacadeRouter.route('/', callbackRouter);
+oauthFacadeRouter.route('/', tokenRouter);
