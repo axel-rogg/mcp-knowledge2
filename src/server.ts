@@ -16,6 +16,7 @@ import { sharesRouter } from './routes/shares.ts';
 import { searchRouter } from './routes/search.ts';
 import { uploadsRouter } from './routes/uploads.ts';
 import { internalRouter } from './routes/internal.ts';
+import { oauthFacadeRouter } from './auth/oauth_facade/index.ts';
 import { startCrons, stopCrons } from './crons/runner.ts';
 import { closeDbPools } from './db/client.ts';
 import { httpRequestCounter, httpRequestDuration } from './observability/metrics.ts';
@@ -74,6 +75,11 @@ app.notFound((c) =>
 
 // ─── Public ────────────────────────────────────────────────────────────────
 app.route('/', healthRouter);
+
+// ─── OAuth-facade (Discovery + DCR + JWKS + /oauth/*) ─────────────────────
+// Spec: PLAN-as3-autonomous.md §1.1. Public endpoints — auth happens
+// per-endpoint inside the facade (Google-redirect for /authorize, etc.).
+app.route('/', oauthFacadeRouter);
 
 // ─── User-Auth (JWT from mcp-approval2) ────────────────────────────────────
 const v1 = new Hono();

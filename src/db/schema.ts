@@ -362,6 +362,48 @@ export const userQuotas = pgTable('user_quotas', {
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
 });
 
+// ─── OAuth Facade (AS-3 K3/K4) ─────────────────────────────────────────────
+
+export const oauthClients = pgTable('oauth_clients', {
+  clientId: text('client_id').primaryKey(),
+  clientSecret: text('client_secret'),
+  clientName: text('client_name'),
+  redirectUris: text('redirect_uris').array().notNull(),
+  grantTypes: text('grant_types').array().notNull(),
+  responseTypes: text('response_types').array().notNull(),
+  tokenEndpointAuthMethod: text('token_endpoint_auth_method').notNull().default('none'),
+  scope: text('scope').notNull(),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  lastUsedAt: bigint('last_used_at', { mode: 'number' }),
+});
+
+export const oauthAuthCodes = pgTable('oauth_auth_codes', {
+  codeHash: text('code_hash').primaryKey(),
+  clientId: text('client_id').notNull(),
+  userId: uuid('user_id').notNull(),
+  redirectUri: text('redirect_uri').notNull(),
+  scope: text('scope'),
+  codeChallenge: text('code_challenge').notNull(),
+  codeChallengeMethod: text('code_challenge_method').notNull(),
+  googleIdTokenSub: text('google_id_token_sub').notNull(),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+  consumedAt: bigint('consumed_at', { mode: 'number' }),
+});
+
+export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
+  tokenHash: text('token_hash').primaryKey(),
+  clientId: text('client_id').notNull(),
+  userId: uuid('user_id').notNull(),
+  scope: text('scope'),
+  googleIdTokenSub: text('google_id_token_sub').notNull(),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  lastUsedAt: bigint('last_used_at', { mode: 'number' }),
+  expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+  rotatedTo: text('rotated_to'),
+  revokedAt: bigint('revoked_at', { mode: 'number' }),
+});
+
 // ─── Re-exported helpers ───────────────────────────────────────────────────
 
 export const schema = {
@@ -379,6 +421,9 @@ export const schema = {
   signingKeys,
   users,
   invites,
+  oauthClients,
+  oauthAuthCodes,
+  oauthRefreshTokens,
 };
 
 export type ObjectRow = typeof objects.$inferSelect;
