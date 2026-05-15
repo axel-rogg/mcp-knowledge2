@@ -237,6 +237,29 @@ export const auditLog = pgTable(
   }),
 );
 
+// ─── Signing Keys (AS-3 K1) ────────────────────────────────────────────────
+
+export const signingKeys = pgTable('signing_keys', {
+  kid: text('kid').primaryKey(),
+  alg: text('alg').notNull(),
+  publicJwk: jsonb('public_jwk').notNull(),
+  privatePem: text('private_pem').notNull(),
+  privateNonce: customType<{ data: Uint8Array; driverData: Buffer }>({
+    dataType() {
+      return 'bytea';
+    },
+    toDriver(v) {
+      return Buffer.from(v);
+    },
+    fromDriver(v) {
+      return new Uint8Array(v as Buffer);
+    },
+  })('private_nonce').notNull(),
+  active: boolean('active').notNull().default(true),
+  rotatedAt: bigint('rotated_at', { mode: 'number' }),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+});
+
 // ─── Idempotency Records ───────────────────────────────────────────────────
 
 export const idempotencyRecords = pgTable(
@@ -322,6 +345,7 @@ export const schema = {
   uploads,
   userQuotas,
   blobDeletionQueue,
+  signingKeys,
 };
 
 export type ObjectRow = typeof objects.$inferSelect;
@@ -330,3 +354,5 @@ export type ShareGrantRow = typeof shareGrants.$inferSelect;
 export type AuditLogRow = typeof auditLog.$inferSelect;
 export type UserQuotaRow = typeof userQuotas.$inferSelect;
 export type UploadRow = typeof uploads.$inferSelect;
+export type SigningKeyRow = typeof signingKeys.$inferSelect;
+export type NewSigningKeyRow = typeof signingKeys.$inferInsert;
