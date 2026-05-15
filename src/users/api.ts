@@ -9,14 +9,14 @@
 // All ops run under withAdminTx because the registry lives outside RLS
 // (auth-layer reads it before any user-context is established).
 
-import { eq } from 'drizzle-orm';
+import { randomBytes } from 'node:crypto';
+import { and, eq, isNull, lt } from 'drizzle-orm';
 import { withAdminTx } from '../db/client.ts';
 import { invites, users } from '../db/schema.ts';
 import { errForbidden, errNotFound } from '../lib/errors.ts';
 import { logger } from '../lib/logger.ts';
 import { nowMs } from '../lib/ids.ts';
-import type { UserRow } from '../db/schema.ts';
-import { and, isNull } from 'drizzle-orm';
+import type { InviteRow, UserRow } from '../db/schema.ts';
 
 export interface GoogleLogin {
   sub: string;
@@ -130,5 +130,120 @@ export async function resolveById(id: string): Promise<UserRow | null> {
   return withAdminTx(async (db) => {
     const rows = await db.select().from(users).where(eq(users.id, id)).limit(1);
     return rows[0] ?? null;
+  });
+}
+
+// ─── Admin operations ─────────────────────────────────────────────────────
+
+export interface ListUsersOpts {
+  status?: 'active' | 'suspended' | 'erased';
+  limit?: number;
+}
+
+/** Caller is responsible for restricting access — these ops bypass RLS. */
+export async function listUsers(opts: ListUsersOpts = {}): Promise<UserRow[]> {
+  const limit = Math.max(1, Math.min(opts.limit ?? 100, 1000));
+  return withAdminTx(async (db) => {
+    if (opts.status) {
+      return db.select().from(users).where(eq(users.status, opts.status)).limit(limit);
+    }
+    return db.select().from(users).limit(limit);
+  });
+}
+
+export async function setUserRole(userId: string, role: 'admin' | 'member'): Promise<UserRow> {
+  const row = await withAdminTx(async (db) => {
+    const updated = await db.update(users).set({ role }).where(eq(users.id, userId)).returning();
+    return updated[0] ?? null;
+  });
+  if (!row) throw errNotFound('user not found');
+  return row;
+}
+
+export async function setUserStatus(
+  userId: string,
+  status: 'active' | 'suspended' | 'erased',
+): Promise<UserRow> {
+  const row = await withAdminTx(async (db) => {
+    const updated = await db.update(users).set({ status }).where(eq(users.id, userId)).returning();
+    return updated[0] ?? null;
+  });
+  if (!row) throw errNotFound('user not found');
+  return row;
+}
+
+export interface InviteUserInput {
+  email: string;
+  invitedBy: string;
+  ttlSeconds?: number;
+}
+
+const DEFAULT_INVITE_TTL_SECONDS = 7 * 24 * 3600;
+
+export async function inviteUser(input: InviteUserInput): Promise<InviteRow> {
+  const token = randomBytes(32).toString('base64url');
+  const now = nowMs();
+  const ttl = (input.ttlSeconds ?? DEFAULT_INVITE_TTL_SECONDS) * 1000;
+  const row = await withAdminTx(async (db) => {
+    const inserted = await db
+      .insert(invites)
+      .values({
+        email: input.email,
+        token,
+        invitedBy: input.invitedBy,
+        expiresAt: now + ttl,
+        createdAt: now,
+      })
+      .returning();
+    return inserted[0] ?? null;
+  });
+  if (!row) throw errNotFound('invite insert returned no row');
+  logger.info({ inviteId: row.id, email: row.email }, 'invite issued');
+  return row;
+}
+
+export async function listInvites(opts: { includeUsed?: boolean; limit?: number } = {}): Promise<InviteRow[]> {
+  const limit = Math.max(1, Math.min(opts.limit ?? 100, 1000));
+  return withAdminTx(async (db) => {
+    if (opts.includeUsed) {
+      return db.select().from(invites).limit(limit);
+    }
+    return db.select().from(invites).where(isNull(invites.usedAt)).limit(limit);
+  });
+}
+
+export async function revokeInvite(inviteId: string): Promise<void> {
+  await withAdminTx(async (db) => {
+    await db.delete(invites).where(eq(invites.id, inviteId));
+  });
+}
+
+/** Cron-friendly: purge invites that have never been used and are expired. */
+export async function purgeExpiredInvites(): Promise<number> {
+  return withAdminTx(async (db) => {
+    const out = await db
+      .delete(invites)
+      .where(and(isNull(invites.usedAt), lt(invites.expiresAt, nowMs())))
+      .returning();
+    return out.length;
+  });
+}
+
+/**
+ * Companion for /v1/internal/erase-user — the hard data-erasure path
+ * lives in routes/internal.ts; here we mark the row as erased and break
+ * the email/google_sub links so re-login can't accidentally re-attach.
+ */
+export async function markUserErased(userId: string): Promise<void> {
+  await withAdminTx(async (db) => {
+    await db
+      .update(users)
+      .set({
+        status: 'erased',
+        googleSub: null,
+        inviteToken: null,
+        displayName: null,
+      })
+      .where(eq(users.id, userId));
   });
 }
