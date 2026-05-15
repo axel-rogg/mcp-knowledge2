@@ -92,7 +92,7 @@ fly deploy --config fly.toml --remote-only \
 step "Verify: health + version"
 APP_URL="https://${APP_NAME}.fly.dev"
 curl -sf -m 10 "${APP_URL}/health"  && echo
-curl -sf -m 10 "${APP_URL}/version" && echo || warn "/version returned non-2xx — OK on first deploy"
+curl -sf -m 10 "${APP_URL}/version" && echo || warn "/version not yet implemented — OK"
 
 step "Verify: readiness (DB + blob)"
 curl -s "${APP_URL}/health/ready" | jq . || warn "readiness check failed — see logs"

@@ -1,36 +1,34 @@
 # Deploy `mcp-knowledge2` to Fly.io
 
 Single-region (Frankfurt) Fly.io deployment with attached Postgres +
-pgvector. Secrets live in Doppler — no plaintext credentials in this repo
-or in your shell history.
+pgvector. **All sensitive values are managed in Doppler** (project
+`mcp-knowledge2`, config `prd_fly`) — the deploy script pulls them and
+pushes to `fly secrets set` for you.
 
 ## TL;DR
 
 ```bash
-# 0. One-time Doppler setup:
+# One-time: doppler setup
 doppler login
 doppler setup --project mcp-knowledge2 --config prd_fly
 
-# 1. First deploy (idempotent):
+# One-shot first deploy
 bash deploy/fly/deploy.sh
-
-# 2. Subsequent deploys (just code):
-fly deploy --remote-only --build-arg "BUILD_SHA=$(git rev-parse --short HEAD)"
-
-# 3. Secret rotation (without redeploy):
-bash deploy/fly/sync-secrets.sh
-fly deploy   # picks up new secrets on next release
 ```
+
+The script is idempotent — re-running skips any step whose result
+already exists.
 
 ## Prerequisites
 
 - **flyctl** installed and authenticated: `fly auth login`
-- **doppler CLI** installed and scoped to this project — guide:
-  <https://docs.doppler.com/docs/cli>
-- **jq** (used by the secrets-sync script)
-- The Doppler config `prd_fly` populated — see *Secrets* below
+- **doppler** CLI installed and scoped:
+  `doppler setup --project mcp-knowledge2 --config prd_fly`
+- **jq** installed (the secrets-sync step parses Doppler's JSON output)
 
-## Architecture (Fly.io edition)
+That's it. Nothing else lives outside Doppler.
+
+## Architecture
 
 ```
                    ┌─ Internet ─┐
@@ -50,6 +48,11 @@ fly deploy   # picks up new secrets on next release
          └─────────────────────┘
 ```
 
+AS-3 (autonomous) mode: KC2 issues its own MCP-client JWTs via the
+OAuth-facade and accepts user tokens directly. No mcp-approval2 dependency
+in the default path — optional OBO bridge by setting `MCP_APPROVAL_JWKS_URL`
+in Doppler.
+
 ## What `deploy.sh` does
 
 | # | Step | Idempotent? |
@@ -58,91 +61,108 @@ fly deploy   # picks up new secrets on next release
 | 2 | `fly postgres create mcp-knowledge2-pg` | yes (skips if exists) |
 | 3 | `fly postgres attach` → sets `DATABASE_URL` | yes (skips if set) |
 | 4 | `CREATE EXTENSION vector; pg_trgm;` | yes (`IF NOT EXISTS`) |
-| 5 | Prints `CREATE ROLE knowledge_admin BYPASSRLS …` for you to run | manual |
-| 6 | `sync-secrets.sh` pushes Doppler → Fly | yes |
-| 7 | `fly deploy --remote-only` with `BUILD_SHA` arg | yes |
-| 8 | Curl `/health` + `/version` + `/health/ready` | yes |
+| 5 | Prints `CREATE ROLE knowledge_admin BYPASSRLS …` SQL for manual paste | manual |
+| 6 | Calls `deploy/fly/sync-secrets.sh` → pulls from Doppler, pushes to Fly | yes |
+| 7 | `fly deploy --remote-only --build-arg BUILD_SHA=$(git rev-parse --short HEAD)` | yes |
+| 8 | Curls `/health`, `/version`, `/health/ready` | yes |
 
-## Secrets — populate Doppler `prd_fly`
+## Secrets — managed in Doppler
 
-These are the keys the runtime reads at boot. Set them in Doppler under
-project `mcp-knowledge2`, config `prd_fly`. Anything in `fly.toml [env]`
-is **excluded** by `sync-secrets.sh` and must NOT be set in Doppler (or
-it would shadow the TOML default).
+The single source of truth is Doppler. Populate these keys in your
+`mcp-knowledge2 / prd_fly` config:
 
 ### Required
 
-| Key | Notes |
-|---|---|
-| `DATABASE_ADMIN_URL` | `postgres://knowledge_admin:<pw>@<PG_NAME>.flycast:5432/knowledge` — password matches the manual `CREATE ROLE` step |
-| `SERVICE_TOKEN` | `openssl rand -hex 32` — gates `/v1/internal/*` |
-| `KMS_MASTER_KEY_B64` | `openssl rand -base64 32` — used by `KMS_PROVIDER=hkdf_local` |
-| `BACKUP_MASTER_KEY` | `openssl rand -base64 32` — independent of any DEK; also encrypts OAuth-facade signing keys at rest |
-| `GOOGLE_OAUTH_CLIENT_ID` | from Google Cloud Console → APIs & Services → Credentials |
-| `GOOGLE_OAUTH_CLIENT_SECRET` | same screen as above |
-| `CLOUDFLARE_ACCOUNT_ID` | from Cloudflare dashboard (any zone, sidebar) |
-| `CLOUDFLARE_API_TOKEN` | token with scopes: Workers AI Read + AI Gateway Run |
-| `BLOB_ENDPOINT` | recommended Tigris: `https://fly.storage.tigris.dev`. Alt: R2, Backblaze |
-| `BLOB_REGION` | Tigris: `auto`. R2: `auto`. Backblaze: bucket region |
-| `BLOB_ACCESS_KEY` | provider-issued access key |
-| `BLOB_SECRET_KEY` | provider-issued secret |
-| `BLOB_BUCKET` | e.g. `knowledge-eu` |
+| Key | What | Where it comes from |
+|---|---|---|
+| `DATABASE_ADMIN_URL` | `postgres://knowledge_admin:<pw>@mcp-knowledge2-pg.flycast:5432/knowledge` | Build after step 5 of `deploy.sh` |
+| `SERVICE_TOKEN` | 32-byte hex; gates `/v1/internal/*` | `openssl rand -hex 32` |
+| `BACKUP_MASTER_KEY` | 32 random bytes, base64 | `openssl rand -base64 32` |
+| `KMS_MASTER_KEY_B64` | 32 random bytes, base64 | `openssl rand -base64 32` |
+| `GOOGLE_OAUTH_CLIENT_ID` | OAuth-facade Google client | Google Cloud Console → OAuth 2.0 Client IDs |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | OAuth-facade Google secret | same |
+| `CLOUDFLARE_ACCOUNT_ID` | Workers AI account | Cloudflare dashboard |
+| `CLOUDFLARE_API_TOKEN` | Token with `Workers AI Read` + `AI Gateway Run` scopes | Cloudflare → API Tokens |
+| `BLOB_ENDPOINT` | e.g. `https://fly.storage.tigris.dev` (Tigris) | Provider dashboard |
+| `BLOB_REGION` | e.g. `auto` (Tigris) / `eu-central` (Backblaze) | Provider |
+| `BLOB_ACCESS_KEY` | S3-style access key | Provider |
+| `BLOB_SECRET_KEY` | S3-style secret | Provider |
+| `BLOB_BUCKET` | e.g. `knowledge-eu` | Provider |
+| `BACKUP_BUCKET` | e.g. `knowledge-backup-eu` (separate lifecycle policy) | Provider |
 
 ### Optional
 
-| Key | Reason |
+| Key | When to set |
 |---|---|
-| `BACKUP_BUCKET` | distinct bucket (different lifecycle/retention) for `backup/*.dump.enc`. Falls back to `BLOB_BUCKET` if unset. |
-| `GOOGLE_HD_ALLOWLIST` | CSV of Workspace `hd` claims allowed to log in |
-| `ALLOWED_EMAILS` | strict CSV email allowlist (recommended for solo deploy: `axelrogg@gmail.com`) |
-| `MCP_APPROVAL_JWKS_URL` | enable the OBO-proxy path from mcp-approval2 |
-| `CLOUDFLARE_AI_GATEWAY_TOKEN` | only if your AI Gateway runs in *Authenticated* mode |
-| `VERTEX_PROJECT` + `VERTEX_SERVICE_ACCOUNT_JSON` | only if you switch `EMBED_PROVIDER` to `vertex` (also override `EMBED_PROVIDER` here) |
+| `CLOUDFLARE_AI_GATEWAY_TOKEN` | If your AI Gateway runs in Authenticated mode |
+| `MCP_APPROVAL_JWKS_URL` | Enables OBO proxy from mcp-approval2 |
+| `ALLOWED_EMAILS` | CSV — strict email whitelist on `/auth/google/callback` |
+| `GOOGLE_HD_ALLOWLIST` | CSV — restrict to specific Workspace `hd` domains |
+| `OPENBAO_ADDR` + `OPENBAO_TOKEN` | When you migrate from `hkdf_local` to OpenBao Transit |
 
-> Secrets in Fly are encrypted at rest and only injected as env vars at
-> container start — they never appear in the image or build logs.
-> Doppler is the single source of truth: rotate there, then run
-> `sync-secrets.sh`.
+### Vertex AI (only if you switch `EMBED_PROVIDER=vertex`)
 
-### Vars `sync-secrets.sh` skips on purpose
+| Key | What |
+|---|---|
+| `EMBED_PROVIDER` | Set to `vertex` (overrides fly.toml default `cloudflare`) |
+| `VERTEX_PROJECT` | GCP project id |
+| `VERTEX_SERVICE_ACCOUNT_JSON` | Inline SA JSON (one-line) — the adapter parses it directly, no file mount needed |
 
-`fly.toml [env]` already sets these — Doppler entries with the same key
-would shadow them silently, so the sync script skips them:
+### Managed by Fly — DO NOT put in Doppler
 
+| Key | Why |
+|---|---|
+| `DATABASE_URL` | Set automatically by `fly postgres attach` |
+
+### Set via `fly.toml [env]` — DO NOT put in Doppler
+
+The sync script skips these to avoid silently shadowing the TOML defaults:
+`PORT`, `NODE_ENV`, `LOG_LEVEL`, `SELF_OAUTH_ISSUER`,
+`GOOGLE_OAUTH_REDIRECT_URI`, `JWKS_CACHE_TTL_SECONDS`, `EMBED_PROVIDER`,
+`CLOUDFLARE_AI_GATEWAY_ID`, `CLOUDFLARE_AI_MODEL`, `KMS_PROVIDER`,
+`BLOB_PATH_STYLE`, `DATABASE_POOL_MAX`, `BACKUP_RETENTION_DAYS`.
+
+If you need to override one (e.g. flip `EMBED_PROVIDER` to `vertex`),
+either edit `fly.toml` or put it in Doppler AND remove it from the
+sync-script's skip-list.
+
+## Re-syncing secrets later
+
+When you rotate any value in Doppler:
+
+```bash
+bash deploy/fly/sync-secrets.sh   # staged, no redeploy
+fly deploy                         # picks up the new staged secrets
 ```
-PORT NODE_ENV LOG_LEVEL
-SELF_OAUTH_ISSUER GOOGLE_OAUTH_REDIRECT_URI
-JWKS_CACHE_TTL_SECONDS
-EMBED_PROVIDER CLOUDFLARE_AI_GATEWAY_ID CLOUDFLARE_AI_MODEL
-KMS_PROVIDER BLOB_PATH_STYLE
-DATABASE_POOL_MAX BACKUP_RETENTION_DAYS
-```
 
-Plus `DATABASE_URL` (Fly sets it via `fly postgres attach`).
+## What `fly.toml` configures (non-secret)
+
+- **`primary_region = "fra"`** — DSGVO posture. All data stays in EU.
+- **`release_command = "npm run db:migrate"`** — applies new
+  `drizzle/migrations/*.sql` against the attached Postgres before swapping
+  traffic. Failure aborts the deploy. `scripts/migrate.ts` and the
+  `drizzle/migrations/` tree are copied into the runtime image (see
+  `Dockerfile` runtime stage), so this works on the release VM.
+- **Boot order**: `serve()` starts BEFORE `pg-boss` so `/health` answers
+  immediately on cold-start. `/health/ready` is the readiness gate.
+- **Two health checks** — `/health` (liveness, 10s grace) and
+  `/health/ready` (db + blob reachability, 30s grace).
+- **`auto_stop_machines = "stop"` + `min_machines_running = 1`** —
+  keeps one warm machine so JWKS-cache and pg-pool stay warm.
+- **`[metrics]`** — Fly's Prometheus scraper pulls `/metrics`.
 
 ## After deploy
 
 ```bash
-# Tail structured logs
-fly logs -a mcp-knowledge2
+fly logs -a mcp-knowledge2                  # tail structured logs
+fly ssh console -a mcp-knowledge2           # shell into the VM
+fly postgres connect -a mcp-knowledge2-pg   # psql to the cluster
+fly secrets list -a mcp-knowledge2          # names only — values never echo
+fly ssh console -a mcp-knowledge2 -C "npm run db:migrate"  # manual re-run
 
-# SSH into the running VM
-fly ssh console -a mcp-knowledge2
-
-# Open a psql session against the cluster
-fly postgres connect -a mcp-knowledge2-pg
-
-# Show secrets metadata (names only, no values)
-fly secrets list -a mcp-knowledge2
-
-# Manual migration re-run (release_command does this automatically)
-fly ssh console -a mcp-knowledge2 -C "npm run db:migrate"
-
-# Scale up if traffic warrants (each replica costs ~$2/mo idle)
 fly scale count 2 -a mcp-knowledge2
 fly scale vm shared-cpu-2x --memory 1024 -a mcp-knowledge2
 
-# Rollback (uses Fly's image registry — instant)
 fly releases list -a mcp-knowledge2
 fly releases rollback <version> -a mcp-knowledge2
 ```
@@ -153,12 +173,12 @@ fly releases rollback <version> -a mcp-knowledge2
 # Public liveness — should always return 200
 curl -sf https://mcp-knowledge2.fly.dev/health
 
-# Readiness — checks DB + blob; 503 if either is down
+# Readiness — checks db + blob; 503 with details if either is down
 curl -s https://mcp-knowledge2.fly.dev/health/ready | jq
 
-# Authenticated route requires a JWT minted by KC2's own /oauth/token
-# (or by Google directly, then exchanged via Discovery). Run the full
-# OAuth flow via scripts/smoke.sh once a JWT is in hand.
+# Authenticated route requires a JWT issued by KC2's own OAuth-facade
+# (or Google directly when caller is the human). DCR + /oauth/token live
+# at /.well-known/oauth-authorization-server.
 TOKEN=$(...)
 curl -sf -H "authorization: bearer $TOKEN" \
   https://mcp-knowledge2.fly.dev/v1/objects | jq .
@@ -166,16 +186,11 @@ curl -sf -H "authorization: bearer $TOKEN" \
 
 ## Known limitations / gotchas
 
-- **No Postgres HA** by default — `--initial-cluster-size 1` keeps the
-  cost low. For pilot this is acceptable; for production scale-out, see
-  [runbook-fly-deploy.md](../../docs/runbooks/runbook-fly-deploy.md).
-- **Blob storage is not auto-provisioned** — pick a provider before
-  deploy. Recommended for low-latency: Tigris (Fly's native S3, lives
-  in the same private network).
-- **Embedding traffic egresses Fly** — Cloudflare Workers AI is reached
-  over the public Internet. No egress fees on Fly, but watch Cloudflare
-  AI quota.
-- **OAuth callback URL** — `GOOGLE_OAUTH_REDIRECT_URI` is set in
-  `fly.toml [env]` to `https://mcp-knowledge2.fly.dev/auth/google/callback`.
-  If you map a custom domain, update both the TOML default AND the
-  redirect URI registered in Google Cloud Console.
+- **No Postgres HA** by default — `--initial-cluster-size 1` keeps cost low.
+  Pilot OK; for production scale-out see runbooks.
+- **Blob storage is not auto-provisioned** — pick a provider before deploy.
+  Recommended for low-latency: Tigris (Fly's native S3, lives in the same
+  private network).
+- **Vertex AI ADC on Fly** — Fly is not on GCP's metadata network, so
+  EMBED_PROVIDER=vertex requires `VERTEX_SERVICE_ACCOUNT_JSON` (inline SA
+  JSON) in Doppler. The path/ADC modes are for k8s/Cloud Run.

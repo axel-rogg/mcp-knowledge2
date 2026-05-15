@@ -4,11 +4,12 @@
 > Single-Tenant (1 Firma = 1 Instance), Multi-User mit Postgres-RLS.
 > Schwester-Repo: [mcp-approval2](https://github.com/axel-rogg/mcp-approval2).
 >
-> **Status 2026-05-15:** AS-3-Code-Complete + **Generic-Object-Model implementiert** auf Branch `feat/as3-cutover`
-> (19 Commits, 72 Tests grün). Cutover-Day pending — siehe
+> **Status 2026-05-15:** AS-3-Code-Complete + **Generic-Object-Model** + **Vulnerabilities-Fix** + **CF Workers AI Embeddings** + **subtype_prefix Query** auf Branch `feat/as3-cutover`. Cutover-Day pending — siehe
 > [docs/runbooks/runbook-as3-cutover.md](docs/runbooks/runbook-as3-cutover.md).
 >
-> **Generic-Object-Model (ADR-0004, 2026-05-15)**: `kind`-Discriminator vollständig entfernt aus Schema, AAD, Routes, Types. Ein generischer Object-Typ mit free-form `subtype: string`. AAD-Format `<recordType>|<owner_id>|<object_id>`. Embedding uniform (`description != null + embed=true`). Memos uniformly shareable. Siehe [GENERIC-DATA-MODEL.md](GENERIC-DATA-MODEL.md) (v3, COMPLETE) + [docs/adr/0004-generic-object-model.md](docs/adr/0004-generic-object-model.md). Migration `0009_drop_kind.sql` deploy-ready.
+> **Generic-Object-Model (ADR-0004, 2026-05-15)**: `kind`-Discriminator vollständig entfernt aus Schema, AAD, Routes, Types. Ein generischer Object-Typ mit free-form `subtype: string`. Convention `doc` als universaler Standard-Subtype. AAD-Format `<recordType>|<owner_id>|<object_id>`. Embedding uniform (`description != null + embed=true`). Memos uniformly shareable. Subtype-Prefix-Filter via `?subtype_prefix=` (für `app:`-Familie + ähnliche Namespaces). Siehe [GENERIC-DATA-MODEL.md](GENERIC-DATA-MODEL.md) (v3, COMPLETE) + [docs/adr/0004-generic-object-model.md](docs/adr/0004-generic-object-model.md). Migration `0009_drop_kind.sql` deploy-ready.
+>
+> **Vulnerabilities-Fix (2026-05-15)**: npm audit von 11 → 4 transitive moderate (alle via `@esbuild-kit/*` im drizzle-kit-Tree — kein upstream fix verfügbar, build-time-only acceptable risk). HIGH undici via testcontainers@11 gefixt. vite@8 + vitest@4 + drizzle-kit@0.31 + esbuild@0.27. Siehe [docs/plans/active/PLAN-vulnerabilities-2026-05-15.md](docs/plans/active/PLAN-vulnerabilities-2026-05-15.md).
 
 ## Architektur (Stand 2026-05-15)
 
@@ -62,6 +63,7 @@ Status-Banner oben in jedem PLAN-File.
 |---|---|---|
 | [PLAN-architecture-v2.md](docs/plans/active/PLAN-architecture-v2.md) | ⚠️ Draft (§1 JWT-Pattern superseded by AS-3; §§2.1/3.5/5.x superseded by ADR-0004) | Konsolidierte v2-Implementation-Spec (Phase 0-6 Baseline). |
 | **[GENERIC-DATA-MODEL.md](GENERIC-DATA-MODEL.md)** | ✅ **IMPLEMENTED 2026-05-15** | **Generic Object Model**: kind raus, subtype free-form. Brief v3 (~720 LOC) + ADR-0004 + Migration 0009. |
+| **[PLAN-vulnerabilities-2026-05-15.md](docs/plans/active/PLAN-vulnerabilities-2026-05-15.md)** | ✅ **Live 2026-05-15** | npm audit Cleanup: testcontainers@11 (HIGH undici) + vite@8 + vitest@4 + drizzle-kit@0.31 + esbuild@0.27. 4 transitive @esbuild-kit/* bleiben (acceptable risk, build-time-only). |
 | [PLAN-architecture-DRAFT-from-mcp-approval2-view.md](docs/plans/active/PLAN-architecture-DRAFT-from-mcp-approval2-view.md) | Input | Caller-Sicht aus approval2, NICHT pushen (lokal). |
 | [PLAN-hetzner-deployment.md](docs/plans/active/PLAN-hetzner-deployment.md) | ⚠️ Spec | Hetzner + GCP Multi-Instance |
 | **[PLAN-as3-autonomous.md](docs/plans/active/PLAN-as3-autonomous.md)** | ✅ **CODE-COMPLETE 2026-05-15** | **AS-3-Migration: KC2 wird autonomer MCP-Server**. K1-K13 + T3 auf `feat/as3-cutover`. |

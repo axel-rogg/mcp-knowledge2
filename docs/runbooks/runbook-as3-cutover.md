@@ -85,22 +85,51 @@ bao write -f knowledge-dek/keys/bootstrap
 
 ### 1.5 Secrets inventory (T-2)
 
-In Doppler / `deploy/hetzner/.env`:
+**Two Doppler-Projects, each with `privat` config:**
+- `mcp-approval2` — approval2-Service-Secrets (provisioned via `terraform/environments/privat/doppler.tf`)
+- `mcp-knowledge2` — KC2-Service-Secrets (provisioned via `terraform/environments/privat/knowledge2-doppler.tf`)
+
+Beide TF-Files leben im **mcp-approval2-Repo** (`terraform/environments/privat/`). Placeholders sind automatisch angelegt; folgende Werte müssen befüllt sein:
+
+**Cross-Service (gleicher Wert in beiden Projects):**
 
 | Secret | Source | Owner |
 |---|---|---|
-| `MCP_KNOWLEDGE_SERVICE_TOKEN` | `openssl rand -hex 32` | New — must match in both .env |
-| `JWT_RS256_PRIVATE_KEY_PEM` + `JWT_RS256_PUBLIC_KEY_PEM` | `deploy/hetzner/generate-secrets.sh` | Existing — verify rotated |
+| `MCP_KNOWLEDGE_SERVICE_TOKEN` (approval2) = `SERVICE_TOKEN` (knowledge2) | `openssl rand -hex 32` | Identischer Wert in beiden |
+
+**approval2-only:**
+
+| Secret | Source | Owner |
+|---|---|---|
+| `JWT_RS256_PRIVATE_KEY_PEM` + `JWT_RS256_PUBLIC_KEY_PEM` | `deploy/hetzner/generate-secrets.sh` | Verify rotated |
 | `JWT_KID` | freeform string with date-stamp | `key-2026-MM-DD` |
 | `GOOGLE_OAUTH_CLIENT_ID` + `_SECRET` | approval2 Google project | Operator |
-| `KC_GOOGLE_OAUTH_CLIENT_ID` + `_SECRET` | knowledge2 Google project | Operator |
 | `VAULT_TOKEN` | OpenBao root or AppRole-issued | Existing |
-| `KNOWLEDGE_BACKUP_MASTER_KEY_BASE64` | `openssl rand -base64 32` | Existing |
-| `KC_BLOB_ACCESS_KEY` + `_SECRET_KEY` + `_BUCKET` | S3 provider | New |
 
-- [ ] Run `bash deploy/hetzner/generate-secrets.sh > /tmp/.env.new` and review-diff against current `.env`
-- [ ] Validate no secrets in transcript (`grep -E "PASSWORD|TOKEN|KEY|SECRET" /tmp/.env.new` should only show keys, not Claude-Code-typed values)
-- [ ] Apply via `cp /tmp/.env.new .env && chmod 600 .env`
+**knowledge2-only:**
+
+| Secret | Source | Owner |
+|---|---|---|
+| `GOOGLE_OAUTH_CLIENT_ID` + `_SECRET` (separate KC2 OAuth-App) | knowledge2 Google project | Operator |
+| `GOOGLE_OAUTH_REDIRECT_URI` | `https://knowledge2.<domain>/auth/google/callback` | TF-default in dev |
+| `SELF_OAUTH_ISSUER` | `https://knowledge2.<domain>` | Operator |
+| `ALLOWED_EMAILS` | CSV der erlaubten Login-Emails | Operator — strict whitelist on KC2's `/auth/google/callback` |
+| `CLOUDFLARE_ACCOUNT_ID` | CF Dashboard URL | Public — kopiert von approval2/privat |
+| `CLOUDFLARE_API_TOKEN` | CF API Tokens — `Workers AI Read` + `AI Gateway Run` | Operator — copy from approval2 ok wenn Permissions stimmen |
+| `CLOUDFLARE_AI_GATEWAY_ID` | Auto via `cloudflare_ai_gateway.knowledge2` TF-Resource | TF-managed |
+| `CLOUDFLARE_AI_GATEWAY_TOKEN` | Optional — nur bei Authenticated Gateway | Operator |
+| `EMBED_PROVIDER` | `cloudflare` (Workers AI bge-m3, default) oder `vertex` | TF-default |
+| `KNOWLEDGE_BACKUP_MASTER_KEY_BASE64` = `BACKUP_MASTER_KEY` | `openssl rand -base64 32` | knowledge2-only |
+| `BLOB_ACCESS_KEY` + `BLOB_SECRET_KEY` + `BLOB_BUCKET` + `BLOB_ENDPOINT` | S3 provider (Tigris/R2/B2/Hetzner) | New |
+| `KMS_PROVIDER` | `openbao` (prod) oder `hkdf_local` (dev) | Operator |
+| `KMS_MASTER_KEY_B64` | `openssl rand -base64 32` — nur bei hkdf_local | Operator |
+| `DATABASE_URL` + `DATABASE_ADMIN_URL` | aus VM-setup.sh oder external Postgres | Operator |
+
+**Pflicht-Checks vor T+0:**
+- [ ] `MCP_KNOWLEDGE_SERVICE_TOKEN` (approval2) == `SERVICE_TOKEN` (knowledge2) — Byte-exakt identisch
+- [ ] `terraform output knowledge2_doppler_dashboard` zeigt die UI mit allen Placeholders gefüllt
+- [ ] Cloudflare API-Token Permissions verifiziert via `curl …/ai/run/@cf/baai/bge-m3` (returns `success:true` mit 1024-dim Vektor)
+- [ ] Falls Hetzner-VM bare-metal: `bash deploy/hetzner/generate-secrets.sh > /tmp/.env.new && diff` (sonst alles via Doppler)
 
 ### 1.6 Rollback-Snapshot (T-1)
 
