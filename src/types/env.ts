@@ -33,10 +33,30 @@ const EnvSchema = z.object({
   DATABASE_ADMIN_URL: z.string().url(),
   DATABASE_POOL_MAX: z.coerce.number().int().positive().default(20),
 
-  JWKS_URL: z.string().url(),
-  JWT_ISSUER: z.string().min(1),
-  JWT_AUDIENCE: z.string().min(1),
+  // AS-3 K13 multi-issuer JWT. The JWT verifier (K5) accepts tokens from:
+  //   * Google OIDC (https://accounts.google.com) — for tokens passed
+  //     directly to KC2 (rare, normally approval2 fronts).
+  //   * KC2's own facade (SELF_OAUTH_ISSUER) — issued by /oauth/token.
+  // JWKS for Google is the well-known endpoint; JWKS for self is in-process.
   JWKS_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(86_400),
+
+  // OAuth-facade (K3/K4): KC2 issues its own MCP-client tokens.
+  SELF_OAUTH_ISSUER: z.string().url(),
+  GOOGLE_OAUTH_CLIENT_ID: z.string().min(1),
+  GOOGLE_OAUTH_CLIENT_SECRET: z.string().min(1),
+  GOOGLE_OAUTH_REDIRECT_URI: z.string().url(),
+  // Optional Workspace-domain allowlist (K-D1). CSV — empty = all domains ok.
+  GOOGLE_HD_ALLOWLIST: z
+    .string()
+    .default('')
+    .transform((s) => s.split(',').map((x) => x.trim()).filter(Boolean)),
+  GOOGLE_JWKS_URL: z.string().url().default('https://www.googleapis.com/oauth2/v3/certs'),
+  GOOGLE_ISSUER: z.string().default('https://accounts.google.com'),
+
+  // OBO (K7): approval2 forwards calls with a signed JWT from its facade.
+  // Optional — when unset, the OBO middleware refuses (no proxy mode).
+  MCP_APPROVAL_JWKS_URL: z.string().url().optional(),
+  MCP_APPROVAL_ISSUER: z.string().default('mcp-approval2'),
 
   SERVICE_TOKEN: z.string().min(32),
 
