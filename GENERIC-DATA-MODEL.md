@@ -1,10 +1,15 @@
 # Implementation Brief — Generic Object Model (kein `kind` mehr)
 
-> **Adressat:** Subagent / Entwickler der die Umsetzung macht.
+> **✅ STATUS: IMPLEMENTED 2026-05-15** auf Branch `feat/as3-cutover`.
+> Commit mcp-knowledge2 `ef8e2b9` (30 files, 1140+/245-) + mcp-approval2 `894d269` (32 files, 450+/347-).
+> Verification: KC2 lint+build+unit+contract ✅, Approval2 lint+build+test 473/473 ✅.
+> ADR-0004 accepted, Migration 0009_drop_kind.sql deployed-ready.
+> Dieser Brief bleibt als **historische Spec** + **Onboarding-Referenz** für neue Entwickler die das Datenmodell verstehen wollen.
+>
+> **Adressat (historisch):** Subagent / Entwickler der die Umsetzung gemacht hat.
 > **Repo:** `/workspaces/mcp-knowledge2` (Storage-Service, standalone) + Cross-Repo-Impact in `/workspaces/mcp-approval2` (Caller, siehe §11).
-> **Status:** Phase 1 — Datenmodell-Konsolidierung. Pre-pilot, **keine produktiven Daten in beiden Repos**. Migration ist Greenfield-Wipe.
 > **Revision:** v3 (2026-05-15) — Audit-driven Drift-Repair gegenüber v2. Konkrete Änderungen vs v2 siehe §0.7.
-> **Out-of-scope:** Standalone-Auth (ADR-0005), DEK-Resolution-Refactor, Body-Format-Specs pro Subtype, Property-Inkompatibilitäts-Validatoren, Mutation-Pattern-Enforcement, Decay-Score, Tool-Wrapper-Implementation. **Alles davon ist Wrapper-Konzern, nicht Storage** — siehe §2 + §10.
+> **Out-of-scope (aus diesem Brief, Folge-Arbeit):** Standalone-Auth (ADR-0005), DEK-Resolution-Refactor, Body-Format-Specs pro Subtype, Property-Inkompatibilitäts-Validatoren, Mutation-Pattern-Enforcement, Decay-Score, Tool-Wrapper-Implementation. **Alles davon ist Wrapper-Konzern, nicht Storage** — siehe §2 + §10 + Wrapper-Conventions-Brief im mcp-approval2-Repo ([docs/plans/active/PLAN-wrapper-conventions.md](https://github.com/axel-rogg/mcp-approval2/blob/feat/as3-cutover/docs/plans/active/PLAN-wrapper-conventions.md)).
 
 ---
 

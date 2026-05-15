@@ -4,9 +4,11 @@
 > Single-Tenant (1 Firma = 1 Instance), Multi-User mit Postgres-RLS.
 > Schwester-Repo: [mcp-approval2](https://github.com/axel-rogg/mcp-approval2).
 >
-> **Status 2026-05-15:** AS-3-Code-Complete auf Branch `feat/as3-cutover`
-> (18 Commits, 72 Tests grün). Cutover-Day pending — siehe
+> **Status 2026-05-15:** AS-3-Code-Complete + **Generic-Object-Model implementiert** auf Branch `feat/as3-cutover`
+> (19 Commits, 72 Tests grün). Cutover-Day pending — siehe
 > [docs/runbooks/runbook-as3-cutover.md](docs/runbooks/runbook-as3-cutover.md).
+>
+> **Generic-Object-Model (ADR-0004, 2026-05-15)**: `kind`-Discriminator vollständig entfernt aus Schema, AAD, Routes, Types. Ein generischer Object-Typ mit free-form `subtype: string`. AAD-Format `<recordType>|<owner_id>|<object_id>`. Embedding uniform (`description != null + embed=true`). Memos uniformly shareable. Siehe [GENERIC-DATA-MODEL.md](GENERIC-DATA-MODEL.md) (v3, COMPLETE) + [docs/adr/0004-generic-object-model.md](docs/adr/0004-generic-object-model.md). Migration `0009_drop_kind.sql` deploy-ready.
 
 ## Architektur (Stand 2026-05-15)
 
@@ -58,7 +60,8 @@ Status-Banner oben in jedem PLAN-File.
 
 | Plan | Status | Zweck |
 |---|---|---|
-| [PLAN-architecture-v2.md](docs/plans/active/PLAN-architecture-v2.md) | ⚠️ Draft (§1 JWT-Pattern superseded by AS-3) | Konsolidierte v2-Implementation-Spec (Phase 0-6 Baseline). |
+| [PLAN-architecture-v2.md](docs/plans/active/PLAN-architecture-v2.md) | ⚠️ Draft (§1 JWT-Pattern superseded by AS-3; §§2.1/3.5/5.x superseded by ADR-0004) | Konsolidierte v2-Implementation-Spec (Phase 0-6 Baseline). |
+| **[GENERIC-DATA-MODEL.md](GENERIC-DATA-MODEL.md)** | ✅ **IMPLEMENTED 2026-05-15** | **Generic Object Model**: kind raus, subtype free-form. Brief v3 (~720 LOC) + ADR-0004 + Migration 0009. |
 | [PLAN-architecture-DRAFT-from-mcp-approval2-view.md](docs/plans/active/PLAN-architecture-DRAFT-from-mcp-approval2-view.md) | Input | Caller-Sicht aus approval2, NICHT pushen (lokal). |
 | [PLAN-hetzner-deployment.md](docs/plans/active/PLAN-hetzner-deployment.md) | ⚠️ Spec | Hetzner + GCP Multi-Instance |
 | **[PLAN-as3-autonomous.md](docs/plans/active/PLAN-as3-autonomous.md)** | ✅ **CODE-COMPLETE 2026-05-15** | **AS-3-Migration: KC2 wird autonomer MCP-Server**. K1-K13 + T3 auf `feat/as3-cutover`. |
@@ -77,6 +80,7 @@ Status-Banner oben in jedem PLAN-File.
 - **`users` + `invites` + `signing_keys` + `oauth_clients`** Tabellen sind auf `feat/as3-cutover` via Migrations 0005-0008 angelegt. RLS-Context kommt aus `current_user` = `users.id`.
 - **MCP-Transport** unter `POST /mcp` auf `feat/as3-cutover` aktiv. 16 Tool-Wrapper für die `/v1/*` REST-Surface (`src/mcp/register_tools.ts`).
 - **CROSS-SERVICE-CONTRACT.md** beschreibt den V1-Adapter (approval2 → KC2 mit JWT). AS-3-Erweiterungen sind im Spec dokumentiert, Contract-Tests in `tests/contract/` sind die ausführbare Wahrheit.
+- **Generic-Object-Model (ADR-0004)**: `objects.kind` Column ist **weg**. Discriminator ist `subtype: text` (free-form, zod-Regex `^[a-z][a-z0-9_:-]{0,31}$`, erlaubt `:` für caller-namespacing wie `app:composable`). `share_grants.resource_kind` und `audit_log.resource_kind` auch gedropt. AAD ist `<recordType>|<owner_id>|<object_id>` ohne subtype-Slot. Embedding-Trigger: `description != null AND request.embed === true`. `composeEmbedSource()` ist uniform. Memos sind shareable (kein Block mehr). **Cross-Repo-Sync**: mcp-approval2 Adapter + Apps-Subsystem + 3 Zod-Duplikate ko-deployed im selben Branch.
 
 ## Repo-Struktur
 
