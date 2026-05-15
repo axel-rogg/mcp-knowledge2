@@ -106,7 +106,7 @@ beforeAll(async () => {
   const { setBlobStoreForTest } = await import('../../src/adapters/blob/s3.ts');
   setBlobStoreForTest(makeInMemoryBlobStore());
 
-  const { setKmsForTest } = await import('../../src/adapters/kms/internal_api.ts');
+  const { setKmsForTest } = await import('../../src/adapters/kms/index.ts');
   setKmsForTest({
     resolveUserDek: async () => new Uint8Array(32), // all-zero key — fine for AES-GCM
   });

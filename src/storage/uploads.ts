@@ -16,7 +16,7 @@ import { uuidV4, nowMs } from '../lib/ids.ts';
 import { buildAad } from '../lib/crypto/aad.ts';
 import { encrypt, importKey } from '../lib/crypto/aes_gcm.ts';
 import { serializeBlob } from '../lib/crypto/serialize.ts';
-import { kms } from '../adapters/kms/internal_api.ts';
+import { kms } from '../adapters/kms/index.ts';
 
 // F-16: keep the presigned-PUT window short. Long uploads should chunk.
 const UPLOAD_TTL_MS = 10 * 60 * 1000; // 10 minutes

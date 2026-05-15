@@ -55,8 +55,14 @@ const EnvSchema = z.object({
   VERTEX_MODEL: z.string().min(1).default('text-embedding-005'),
   VERTEX_SERVICE_ACCOUNT_JSON_PATH: z.string().min(1).optional(),
 
-  MCP_APPROVAL_BASE_URL: z.string().url(),
-  MCP_APPROVAL_INTERNAL_TOKEN: z.string().min(32),
+  // AS-3 K9/K13: KMS provider selection.
+  //   - 'openbao'    — prod default, Transit-Engine via OPENBAO_ADDR/TOKEN
+  //   - 'hkdf_local' — dev/solo fallback, derive DEK from KMS_MASTER_KEY_B64
+  KMS_PROVIDER: z.enum(['openbao', 'hkdf_local']).default('hkdf_local'),
+  OPENBAO_ADDR: z.string().url().optional(),
+  OPENBAO_TOKEN: z.string().optional(),
+  OPENBAO_TRANSIT_PATH: z.string().default('transit'),
+  KMS_MASTER_KEY_B64: z.string().optional(),
 
   // F-21: must decode to exactly 32 raw bytes for AES-256-GCM. Hex (64 ascii)
   // and base64 (44 ascii padded) are both fine — we accept either by

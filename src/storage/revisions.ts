@@ -17,7 +17,7 @@ import { errBadRequest, errNotFound } from '../lib/errors.ts';
 import { buildAad } from '../lib/crypto/aad.ts';
 import { decrypt, importKey } from '../lib/crypto/aes_gcm.ts';
 import { blobStore } from '../adapters/blob/s3.ts';
-import { kms } from '../adapters/kms/internal_api.ts';
+import { kms } from '../adapters/kms/index.ts';
 import type { ObjectKind } from '../types/domain.ts';
 
 export interface RevisionMeta {

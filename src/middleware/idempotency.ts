@@ -17,7 +17,7 @@ import { logger } from '../lib/logger.ts';
 import { buildAad } from '../lib/crypto/aad.ts';
 import { decrypt, encrypt, importKey } from '../lib/crypto/aes_gcm.ts';
 import { serializeBlob, deserializeBlob } from '../lib/crypto/serialize.ts';
-import { kms } from '../adapters/kms/internal_api.ts';
+import { kms } from '../adapters/kms/index.ts';
 import type { RequestContext } from '../types/domain.ts';
 
 const IDEM_TTL_MS = 24 * 60 * 60 * 1000;
