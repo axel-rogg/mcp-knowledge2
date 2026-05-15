@@ -12,7 +12,7 @@ import { decrypt, encrypt, importKey } from '../lib/crypto/aes_gcm.ts';
 import { uuidV4, nowMs } from '../lib/ids.ts';
 import { blobStore } from '../adapters/blob/s3.ts';
 import { kms } from '../adapters/kms/index.ts';
-import { embeddingAdapter } from '../adapters/embed/vertex.ts';
+import { embeddingAdapter } from '../adapters/embed/index.ts';
 import { errBadRequest, errForbidden, errNotFound, AppError } from '../lib/errors.ts';
 import { requireContext } from '../lib/context.ts';
 import type { Visibility } from '../types/domain.ts';

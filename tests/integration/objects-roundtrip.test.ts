@@ -111,11 +111,11 @@ beforeAll(async () => {
     resolveUserDek: async () => new Uint8Array(32), // all-zero key — fine for AES-GCM
   });
 
-  const { setEmbeddingAdapterForTest } = await import('../../src/adapters/embed/vertex.ts');
+  const { setEmbeddingAdapterForTest } = await import('../../src/adapters/embed/index.ts');
   setEmbeddingAdapterForTest({
     model: 'test-stub',
-    dimensions: 768,
-    embed: async (texts: string[]) => texts.map(() => Array.from({ length: 768 }, () => 0.1)),
+    dimensions: 1024,
+    embed: async (texts: string[]) => texts.map(() => Array.from({ length: 1024 }, () => 0.1)),
   });
 
   // ─── Build a test-only Hono app that mounts the production routers ──────

@@ -79,10 +79,28 @@ const EnvSchema = z.object({
     .default('true')
     .transform((v) => v === 'true' || v === '1'),
 
-  VERTEX_PROJECT: z.string().min(1),
+  // ── Embedding provider selection ──────────────────────────────────
+  // Default: 'cloudflare' (Workers AI via AI Gateway, bge-m3 multilingual,
+  // 1024-dim). 'vertex' kept as fallback for migration / parity testing.
+  EMBED_PROVIDER: z.enum(['cloudflare', 'vertex']).default('cloudflare'),
+
+  // ── Vertex AI (legacy, kept for fallback) ─────────────────────────
+  // Only required when EMBED_PROVIDER='vertex'; optional otherwise so the
+  // service can boot without Google Cloud credentials.
+  VERTEX_PROJECT: z.string().min(1).optional(),
   VERTEX_LOCATION: z.string().min(1).default('europe-west4'),
-  VERTEX_MODEL: z.string().min(1).default('text-embedding-005'),
+  VERTEX_MODEL: z.string().min(1).default('text-multilingual-embedding-002'),
   VERTEX_SERVICE_ACCOUNT_JSON_PATH: z.string().min(1).optional(),
+
+  // ── Cloudflare Workers AI + optional AI Gateway ───────────────────
+  // Only required when EMBED_PROVIDER='cloudflare' (the default). API-token
+  // needs scopes: Workers AI Read + AI Gateway Run (if Gateway used).
+  // When CLOUDFLARE_AI_GATEWAY_ID is set, traffic goes via AI Gateway URL
+  // (caching, audit, rate-limit); otherwise direct to Workers AI.
+  CLOUDFLARE_ACCOUNT_ID: z.string().min(1).optional(),
+  CLOUDFLARE_API_TOKEN: z.string().min(1).optional(),
+  CLOUDFLARE_AI_GATEWAY_ID: z.string().min(1).optional(),
+  CLOUDFLARE_AI_MODEL: z.string().min(1).default('@cf/baai/bge-m3'),
 
   // AS-3 K9/K13: KMS provider selection.
   //   - 'openbao'    — prod default, Transit-Engine via OPENBAO_ADDR/TOKEN

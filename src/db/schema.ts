@@ -207,7 +207,12 @@ export const objectVectors = pgTable(
   'object_vectors',
   {
     objectId: uuid('object_id').primaryKey(),
-    embedding: vector('embedding', 768),
+    // Dim follows EMBED_PROVIDER:
+    //   cloudflare → 1024 (bge-m3, default)
+    //   vertex     → 768  (text-multilingual-embedding-002, legacy)
+    // Schema is sized for the default (1024). Switching to vertex requires a
+    // dimension-shrink migration, not just a config flip.
+    embedding: vector('embedding', 1024),
     model: text('model').notNull(),
     embeddedAt: bigint('embedded_at', { mode: 'number' }).notNull(),
   },

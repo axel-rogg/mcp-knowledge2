@@ -4,7 +4,7 @@
 import { sql } from 'drizzle-orm';
 import { withUserTx } from '../db/client.ts';
 import { requireContext } from '../lib/context.ts';
-import { embeddingAdapter } from '../adapters/embed/vertex.ts';
+import { embeddingAdapter } from '../adapters/embed/index.ts';
 import { rrfFuse } from './rrf.ts';
 import { errBadRequest } from '../lib/errors.ts';
 
