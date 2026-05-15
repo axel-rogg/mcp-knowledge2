@@ -81,6 +81,7 @@ Status-Banner oben in jedem PLAN-File.
 - **MCP-Transport** unter `POST /mcp` auf `feat/as3-cutover` aktiv. 16 Tool-Wrapper für die `/v1/*` REST-Surface (`src/mcp/register_tools.ts`).
 - **CROSS-SERVICE-CONTRACT.md** beschreibt den V1-Adapter (approval2 → KC2 mit JWT). AS-3-Erweiterungen sind im Spec dokumentiert, Contract-Tests in `tests/contract/` sind die ausführbare Wahrheit.
 - **Generic-Object-Model (ADR-0004)**: `objects.kind` Column ist **weg**. Discriminator ist `subtype: text` (free-form, zod-Regex `^[a-z][a-z0-9_:-]{0,31}$`, erlaubt `:` für caller-namespacing wie `app:composable`). `share_grants.resource_kind` und `audit_log.resource_kind` auch gedropt. AAD ist `<recordType>|<owner_id>|<object_id>` ohne subtype-Slot. Embedding-Trigger: `description != null AND request.embed === true`. `composeEmbedSource()` ist uniform. Memos sind shareable (kein Block mehr). **Cross-Repo-Sync**: mcp-approval2 Adapter + Apps-Subsystem + 3 Zod-Duplikate ko-deployed im selben Branch.
+- **subtype_prefix Filter (2026-05-15, Commit `c3f72df`)**: `GET /v1/objects?subtype_prefix=app:` macht left-anchored LIKE-Match (nutzt B-Tree-Index). Mutually-exclusive mit `subtype=` (400 BAD_REQUEST wenn beide). Hybrid-Search Body: `subtype_prefixes: string[]` (kombinierbar mit `subtypes`). MCP `objects.list`-Tool unterstützt beides. Caller (mcp-approval2) hat ko-deployten Adapter (`subtypePrefix?: string`) + Apps-Subsystem nutzt serverseitig `subtypePrefix='app:'`.
 
 ## Repo-Struktur
 
