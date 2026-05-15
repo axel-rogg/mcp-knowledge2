@@ -237,6 +237,34 @@ export const auditLog = pgTable(
   }),
 );
 
+// ─── Users (AS-3 K2) ───────────────────────────────────────────────────────
+
+// CITEXT in the DB; drizzle has no native citext customType so we surface as
+// text. The unique-index/CITEXT comparison stays case-insensitive at the DB
+// layer regardless of how the column is typed in TS.
+export const users = pgTable('users', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  email: text('email').notNull(),
+  googleSub: text('google_sub'),
+  displayName: text('display_name'),
+  role: text('role').notNull().default('member'),       // 'admin' | 'member'
+  status: text('status').notNull().default('active'),   // 'active' | 'suspended' | 'erased'
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  lastSeenAt: bigint('last_seen_at', { mode: 'number' }),
+  invitedBy: uuid('invited_by'),
+  inviteToken: text('invite_token'),
+});
+
+export const invites = pgTable('invites', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  email: text('email').notNull(),
+  token: text('token').notNull(),
+  invitedBy: uuid('invited_by').notNull(),
+  expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+  usedAt: bigint('used_at', { mode: 'number' }),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+});
+
 // ─── Signing Keys (AS-3 K1) ────────────────────────────────────────────────
 
 export const signingKeys = pgTable('signing_keys', {
@@ -346,6 +374,8 @@ export const schema = {
   userQuotas,
   blobDeletionQueue,
   signingKeys,
+  users,
+  invites,
 };
 
 export type ObjectRow = typeof objects.$inferSelect;
@@ -356,3 +386,7 @@ export type UserQuotaRow = typeof userQuotas.$inferSelect;
 export type UploadRow = typeof uploads.$inferSelect;
 export type SigningKeyRow = typeof signingKeys.$inferSelect;
 export type NewSigningKeyRow = typeof signingKeys.$inferInsert;
+export type UserRow = typeof users.$inferSelect;
+export type NewUserRow = typeof users.$inferInsert;
+export type InviteRow = typeof invites.$inferSelect;
+export type NewInviteRow = typeof invites.$inferInsert;
