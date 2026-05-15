@@ -3,9 +3,18 @@
 Storage + Sharing + Hybrid-Search service for the **mcp-approval2** ecosystem.
 Single-tenant (1 firma = 1 instance), multi-user, per-object sharing via RLS.
 
-> Status: **Phase 0–6 scaffolded, single-shot implementation 2026-05-13**.
-> See [docs/plans/active/PLAN-architecture-v2.md](./docs/plans/active/PLAN-architecture-v2.md)
-> for the authoritative spec.
+> Status (2026-05-15): **AS-3 code-complete + Generic-Object-Model (ADR-0004)
+> implemented** on branch `feat/as3-cutover`. Cutover-Day pending — see
+> [docs/runbooks/runbook-as3-cutover.md](./docs/runbooks/runbook-as3-cutover.md).
+>
+> - **ADR-0004**: kind-Discriminator entfernt, free-form `subtype` mit
+>   namespace-Support (`app:composable`, `app:shopping-list`, …).
+>   Migration `0009_drop_kind.sql` deploy-ready. Spec:
+>   [GENERIC-DATA-MODEL.md](./GENERIC-DATA-MODEL.md).
+> - **subtype_prefix Query** (REST + MCP + Hybrid-Search) für effiziente
+>   Namespace-Filter (z.B. alle `app:*` Subtypes).
+> - Plan: [docs/plans/active/PLAN-architecture-v2.md](./docs/plans/active/PLAN-architecture-v2.md)
+>   (§§2.1+3.5+5.x sind durch ADR-0004 superseded).
 
 ## Architecture in 30 seconds
 
@@ -87,9 +96,10 @@ tests/                    unit + integration (testcontainers) + smoke shell
 | Body + description (per object) | App | DEK from mcp-approval2 KMS (resolved per request, never stored) |
 | Backups | `pg_dump` → AES-GCM → blob | `BACKUP_MASTER_KEY` env (separate from DEKs) |
 
-**AAD** = `<recordType>|<owner_id>|<object_id>|<kind>:<subtype>` —
+**AAD** = `<recordType>|<owner_id>|<object_id>` (post-ADR-0004) —
 prevents cross-user and cross-object ciphertext replay. Owner-transfer
-requires explicit re-encryption.
+requires explicit re-encryption. Subtype-Slot ist seit ADR-0004 entfernt
+(subtype ist free-form Caller-Convention, hat keine Storage-Semantik).
 
 **See [docs/SECURITY.md](./docs/SECURITY.md)** for the full threat model
 (including the operator-trust assumption and embedding-inversion risk).
