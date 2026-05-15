@@ -8,7 +8,7 @@ import { errorHandler } from './middleware/error.ts';
 import { installContext } from './middleware/context.ts';
 import { idempotency } from './middleware/idempotency.ts';
 import { requestLog } from './middleware/request_log.ts';
-import { requireJwt } from './auth/jwt.ts';
+import { requireJwtOrOnBehalfOf } from './auth/require_jwt_or_obo.ts';
 import { requireServiceToken } from './auth/service_token.ts';
 import { healthRouter } from './routes/health.ts';
 import { objectsRouter } from './routes/objects.ts';
@@ -81,9 +81,9 @@ app.route('/', healthRouter);
 // per-endpoint inside the facade (Google-redirect for /authorize, etc.).
 app.route('/', oauthFacadeRouter);
 
-// ─── User-Auth (JWT from mcp-approval2) ────────────────────────────────────
+// ─── User-Auth: own JWT OR approval2 OBO (AS-3 K8) ─────────────────────────
 const v1 = new Hono();
-v1.use('*', requireJwt);
+v1.use('*', requireJwtOrOnBehalfOf);
 v1.use('*', installContext);
 v1.use('*', idempotency);
 v1.route('/', objectsRouter);
