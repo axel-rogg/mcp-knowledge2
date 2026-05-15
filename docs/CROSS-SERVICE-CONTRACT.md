@@ -251,7 +251,7 @@ Each drift is keyed `D-<n>` for follow-up tickets.
 - **Server** today (post ADR-0004) accepts
   `{ subtypes?: string[], limit }` — free-form subtype array, no enum.
 - **Effect (pre-ADR-0004):** zod-parse rejected multi-kind queries.
-- **Fix:** AP — send `{ subtypes: ['file', 'skill_manifest'] }` (or omit
+- **Fix:** AP — send `{ subtypes: ['doc', 'skill_manifest'] }` (or omit
   entirely for unfiltered). Old `kind` / `kinds` keys are dropped.
 
 ### D-10 — `eraseUser` (HIGH)

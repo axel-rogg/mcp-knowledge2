@@ -84,7 +84,7 @@ export function registerAllTools(): void {
 
   registerTool({
     name: 'objects.create',
-    description: 'Create a new object. `subtype` is a free-form caller-convention string (e.g. "file", "skill_manifest", "memo", "app:composable"). Body is base64-encoded.',
+    description: 'Create a new object. `subtype` is a free-form caller-convention string (e.g. "doc", "skill_manifest", "memo", "app:composable"). Body is base64-encoded.',
     inputSchema: zodToJsonSchema(CreateInput),
     annotations: {
       title: 'Create object',

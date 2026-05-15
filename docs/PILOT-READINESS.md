@@ -153,17 +153,17 @@ TOKEN=$(curl -sf https://mcp-approval2.fly.dev/v1/internal/debug-jwt \
 ID=$(curl -sf -X PUT https://mcp-knowledge2.fly.dev/v1/objects \
   -H "authorization: bearer $TOKEN" \
   -H "content-type: application/json" \
-  -d '{"subtype":"file","body":"hello pilot"}' | jq -r .id)
+  -d '{"subtype":"doc","body":"hello pilot"}' | jq -r .id)
 
 curl -sf -H "authorization: bearer $TOKEN" \
   https://mcp-knowledge2.fly.dev/v1/objects/$ID | jq .
 
 curl -sf -H "authorization: bearer $TOKEN" \
-  "https://mcp-knowledge2.fly.dev/v1/objects?subtype=file&limit=10" | jq .
+  "https://mcp-knowledge2.fly.dev/v1/objects?subtype=doc&limit=10" | jq .
 
 curl -sf -H "authorization: bearer $TOKEN" \
   -X POST -H "content-type: application/json" \
-  -d '{"q":"pilot","subtypes":["file"]}' \
+  -d '{"q":"pilot","subtypes":["doc"]}' \
   https://mcp-knowledge2.fly.dev/v1/search | jq .
 
 curl -sf -X DELETE -H "authorization: bearer $TOKEN" \
