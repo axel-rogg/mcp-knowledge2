@@ -1,6 +1,17 @@
 # PLAN — mcp-knowledge2 Architektur v2 (Konsolidierte Implementation-Spec)
 
-> **Status: ⚠️ DRAFT — KONSOLIDIERUNG aus v1 + externem Detail-Entwurf**
+> **Status: ⚠️ DRAFT — Baseline für Phase 0-6, §1 Auth-Boundary durch AS-3 abgelöst (2026-05-15)**
+>
+> ⚠️ **AS-3-Hinweis (2026-05-15):** Der hier in §1 + §3.3 (KMS-Variante-B)
+> beschriebene Trust-Mechanismus (`JWT signed by mcp-approval2 → JWKS-verify`)
+> ist durch die AS-3-Migration ersetzt. Authoritativ ist jetzt:
+> - [PLAN-as3-autonomous.md](./PLAN-as3-autonomous.md) für die Auth-Schicht
+>   (Google OIDC + Self-Facade + OBO via approval2)
+> - [PLAN-as3-bigbang.md](./PLAN-as3-bigbang.md) für die Cross-Repo-Cutover-Reihenfolge
+>
+> Die übrigen Sektionen dieses Plans (Schema, Embedding, Sharing, RLS,
+> Audit, Quota, Threat-Model) bleiben gültig und sind die Baseline für die
+> AS-3-Erweiterung.
 >
 > Erstellt: 2026-05-13. Dieses File ist die **autoritative Implementation-
 > Spec** fuer mcp-knowledge2. Es baut auf:

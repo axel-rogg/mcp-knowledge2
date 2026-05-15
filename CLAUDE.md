@@ -1,9 +1,12 @@
 # mcp-knowledge2 — Kontext für Claude Code
 
-> **Storage- und Sharing-Service** für mcp-approval2 (heute) und langfristig **autonomer MCP-Server**
-> mit eigenem OAuth-Login (AS-3-Ziel).
+> **Storage- und Sharing-Service** + **autonomer MCP-Server** (post-AS-3).
 > Single-Tenant (1 Firma = 1 Instance), Multi-User mit Postgres-RLS.
 > Schwester-Repo: [mcp-approval2](https://github.com/axel-rogg/mcp-approval2).
+>
+> **Status 2026-05-15:** AS-3-Code-Complete auf Branch `feat/as3-cutover`
+> (18 Commits, 72 Tests grün). Cutover-Day pending — siehe
+> [docs/runbooks/runbook-as3-cutover.md](docs/runbooks/runbook-as3-cutover.md).
 
 ## Architektur (Stand 2026-05-15)
 
@@ -36,14 +39,18 @@
 - mcp-approval2 bleibt **optional als Approval-Proxy** davor (S2S via OBO-JWT + Service-Token).
 - Beide MCP-Pfade laufen parallel: Claude.ai entscheidet per registrierter URL ob direkt zu KC2 oder via approval2.
 
-**Heutiger Stand (Pre-AS-3):**
-- Phase 0-6 scaffolded (single-shot 2026-05-13), 148 Tests grün
-- Auth: validiert mcp-approval2-signed JWT via `JWKS_URL`
-- KMS: callt mcp-approval2 internal API für DEK-Resolution
-- Kein MCP-Transport, nur REST
-- Keine eigene `users`-Tabelle (Identity läuft komplett über approval2's JWT-`sub`)
+**Stand auf `feat/as3-cutover` (AS-3 Code-Complete 2026-05-15):**
+- Phase 0-6 baseline (single-shot 2026-05-13) + AS-3-Migration K1-K13 + T3
+- Auth: Multi-Issuer-Verifier — Google OIDC + Self-Facade + OBO via approval2
+- Eigene DCR-OAuth-2.1-Facade unter `src/auth/oauth_facade/` (Discovery, DCR, JWKS, /authorize+Google-redirect, /token+PKCE+refresh-rotation)
+- Eigene `users` + `invites` + `signing_keys` + `oauth_clients` Tabellen (Migrations 0005-0008)
+- KMS: eigenes Adapter-Interface — `hkdf_local` Default, `openbao` für Pilot
+- MCP-Transport unter `POST /mcp` (Streamable-HTTP) — 16 Tool-Wrapper für die `/v1/*` REST-Surface
+- Audit-Log mit `via_proxy` + `approval_id` Spalten (Cross-Service-Trail)
+- Cross-Service-Contract-Tests fixieren das Wire-Format zwischen approval2 ↔ KC2
 
-Diese Punkte werden durch AS-3 alle umgestellt — siehe Plan-Index.
+**Was auf `main` ist (pre-cutover):** nur die AS-3-Specs + dieses CLAUDE.md.
+Die Code-Änderungen liegen auf `feat/as3-cutover` und werden beim Cutover gemerged.
 
 ## Plan-Index
 
@@ -51,22 +58,25 @@ Status-Banner oben in jedem PLAN-File.
 
 | Plan | Status | Zweck |
 |---|---|---|
-| [PLAN-architecture-v2.md](docs/plans/active/PLAN-architecture-v2.md) | ⚠️ Draft | Konsolidierte v2-Implementation-Spec (Phase 0-6 Baseline). §1 JWT-Pattern wird durch AS-3 abgelöst. |
+| [PLAN-architecture-v2.md](docs/plans/active/PLAN-architecture-v2.md) | ⚠️ Draft (§1 JWT-Pattern superseded by AS-3) | Konsolidierte v2-Implementation-Spec (Phase 0-6 Baseline). |
 | [PLAN-architecture-DRAFT-from-mcp-approval2-view.md](docs/plans/active/PLAN-architecture-DRAFT-from-mcp-approval2-view.md) | Input | Caller-Sicht aus approval2, NICHT pushen (lokal). |
 | [PLAN-hetzner-deployment.md](docs/plans/active/PLAN-hetzner-deployment.md) | ⚠️ Spec | Hetzner + GCP Multi-Instance |
-| **[PLAN-as3-autonomous.md](docs/plans/active/PLAN-as3-autonomous.md)** | ⚠️ **SPEC (2026-05-15)** | **AS-3-Migration: KC2 wird autonomer MCP-Server**. Definiert OAuth-Facade, `users`-Tabelle, OBO-Verify, MCP-Transport, KMS-Self-Management. Lies das _vor_ Auth-/KMS-Arbeit. |
-| **[PLAN-as3-bigbang.md](docs/plans/active/PLAN-as3-bigbang.md)** | ⚠️ **SPEC (2026-05-15)** | **Cross-Repo-Cutover-Plan**. Ein-Wurf-Reihenfolge für AS-3-Umstellung beider Repos parallel. |
-| [CROSS-SERVICE-CONTRACT.md](docs/CROSS-SERVICE-CONTRACT.md) | ✅ Live | Wire-Shape gegenüber mcp-approval2-Adapter (v1-Pattern, AS-3 erweitert das) |
+| **[PLAN-as3-autonomous.md](docs/plans/active/PLAN-as3-autonomous.md)** | ✅ **CODE-COMPLETE 2026-05-15** | **AS-3-Migration: KC2 wird autonomer MCP-Server**. K1-K13 + T3 auf `feat/as3-cutover`. |
+| **[PLAN-as3-bigbang.md](docs/plans/active/PLAN-as3-bigbang.md)** | ✅ **TIER 0-3 CODE-COMPLETE** | Cross-Repo-Cutover-Plan. Tier 4 (Cutover-Window) pending. |
+| **[runbook-as3-cutover.md](docs/runbooks/runbook-as3-cutover.md)** | ✅ **Operator-Anleitung** | Step-by-Step T-7 bis T+7d für den Cutover-Tag. 452 Zeilen. |
+| [CROSS-SERVICE-CONTRACT.md](docs/CROSS-SERVICE-CONTRACT.md) | ⚠️ Live (V1-Pattern, OBO-Erweiterung in AS-3-Spec dokumentiert) | Wire-Shape gegenüber mcp-approval2-Adapter |
 | [SECURITY.md](docs/SECURITY.md) | ✅ Live | Threat-Model, Crypto-Stages, Embedding-Inversion-Risk |
 | [PILOT-READINESS.md](docs/PILOT-READINESS.md) | ✅ Live | Pre-Pilot-Checkliste |
 
 ## Was bei Arbeit beachten
 
-- **Auth-Code** (`src/auth/jwt.ts`): heute Single-Issuer (approval2). AS-3 macht das Multi-Issuer (Google + Self + OBO). Bei jeder Änderung erst [PLAN-as3-autonomous.md §1.1](docs/plans/active/PLAN-as3-autonomous.md) lesen.
-- **KMS-Code** (`src/adapters/kms/internal_api.ts`): zum Löschen vorgesehen in AS-3. Nichts mehr drauf bauen. Neue KMS-Aufrufe gehen über das Interface, die Implementierung wechselt zu OpenBao oder hkdf_local.
-- **`users`-Tabelle** existiert heute NICHT. AS-3 fügt sie hinzu (Migration 0005, siehe §1.2 im Spec). Bis dahin: jeder `current_user`-Setup kommt direkt aus JWT-`sub`, kein User-Lookup nötig.
-- **MCP-Transport** ist NICHT da. AS-3 fügt das hinzu (§1.4). Alle Tool-Aufrufe heute laufen über REST.
-- **CROSS-SERVICE-CONTRACT.md** beschreibt den V1-Adapter (approval2 → KC2 mit JWT). AS-3 erweitert das um OBO-Pattern; der Contract wird beim Cutover aktualisiert.
+**Welcher Branch?** Pre-Cutover ist `main` der V1-Stand und `feat/as3-cutover` der AS-3-Stand. Wenn du AS-3-Code anfasst: auf dem Branch. Wenn du nur Docs/Specs änderst: nach `main`. Nach dem Cutover-Tag verschmelzen.
+
+- **Auth-Code** (`src/auth/jwt.ts`, `src/auth/oauth_facade/`, `src/auth/on_behalf_of.ts`): Multi-Issuer-Pattern auf `feat/as3-cutover` umgesetzt. Bei Änderungen die JWT-Format anfassen: §1.1 + §2 im AS-3-Spec ist die Quelle, plus die Contract-Tests in `tests/contract/`.
+- **KMS-Code** (`src/adapters/kms/`): `internal_api.ts` ist auf `feat/as3-cutover` gelöscht, durch `hkdf_local.ts` + `openbao.ts` ersetzt. KMS-Provider wird via `KMS_PROVIDER` env gewählt.
+- **`users` + `invites` + `signing_keys` + `oauth_clients`** Tabellen sind auf `feat/as3-cutover` via Migrations 0005-0008 angelegt. RLS-Context kommt aus `current_user` = `users.id`.
+- **MCP-Transport** unter `POST /mcp` auf `feat/as3-cutover` aktiv. 16 Tool-Wrapper für die `/v1/*` REST-Surface (`src/mcp/register_tools.ts`).
+- **CROSS-SERVICE-CONTRACT.md** beschreibt den V1-Adapter (approval2 → KC2 mit JWT). AS-3-Erweiterungen sind im Spec dokumentiert, Contract-Tests in `tests/contract/` sind die ausführbare Wahrheit.
 
 ## Repo-Struktur
 

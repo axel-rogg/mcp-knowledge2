@@ -1,6 +1,19 @@
 # PLAN — AS-3 Big-Bang-Cutover (Cross-Repo)
 
-> **Status: ⚠️ SPEC (2026-05-15) — pre-implementation, "ein Wurf"**
+> **Status: ✅ TIER 0-3 CODE-COMPLETE 2026-05-15 — Tier 4 (Cutover-Day) pending**
+>
+> Implementations-Reihenfolge §4 (Tier 0-3) ist umgesetzt: parallel von zwei
+> Implementation-Agents + einem Cross-Service-Contract-Test-Agent, ~90 min
+> Wall-Clock pro Welle. Beide Repos haben Branch `feat/as3-cutover` mit:
+> - mcp-knowledge2: 18 Commits (K1-K13 + T3 + Runbook + docker-compose)
+> - mcp-approval2: 14 Commits (A1-A12 + T3 + docker-compose)
+>
+> Tests: KC2 72 grün + approval2 645 grün. Typecheck beide grün. Nichts gepusht.
+>
+> §5 Cutover-Tag-Window ist Operator-Task — siehe
+> [docs/runbooks/runbook-as3-cutover.md](../../runbooks/runbook-as3-cutover.md).
+> Vorbedingungen aus §2 (Google-OAuth-Setup, OpenBao, DNS+TLS, Secrets) müssen
+> vorher stehen.
 >
 > Master-Orchestrierung für die AS-3-Umstellung beider Repos in einem Cutover.
 > Die per-Repo-Specs sind die Detailebene — dieses Dokument koordiniert.

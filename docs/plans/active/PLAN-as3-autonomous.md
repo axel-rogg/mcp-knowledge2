@@ -1,8 +1,13 @@
 # PLAN — mcp-knowledge2 AS-3 Autonom-Migration
 
-> **Status: ⚠️ SPEC — pre-implementation, 2026-05-15**
+> **Status: ✅ CODE-COMPLETE 2026-05-15 — pending Cutover-Day (Operator-Task)**
 >
-> Dieses Dokument beschreibt **was in mcp-knowledge2 umgestellt werden muss**, damit
+> Tasks K1-K13 + T3-Cross-Service-Contract-Tests implementiert auf Branch
+> `feat/as3-cutover` (18 Commits). 72 Tests grün (16 unit + 56 contract).
+> Typecheck clean. Nichts gepusht. Cutover-Tag-Anleitung:
+> [docs/runbooks/runbook-as3-cutover.md](../../runbooks/runbook-as3-cutover.md).
+>
+> Dieses Dokument beschreibt **was in mcp-knowledge2 umgestellt wurde**, damit
 > der Service autonom als MCP-Server mit eigenem OAuth-Login betrieben werden kann.
 > mcp-approval2 bleibt **optional als vorgeschalteter Approval-Proxy** verfügbar.
 >
