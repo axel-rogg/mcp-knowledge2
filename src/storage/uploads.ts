@@ -121,8 +121,6 @@ export async function finalizeUpload(id: string): Promise<UploadStatus> {
     recordType: 'objects',
     ownerId: ctx.userId,
     objectId: id, // upload_id doubles as AAD object-id slot
-    kind: 'memo',
-    subtype: 'upload-finalized',
   });
   const cipher = await encrypt(key, plain, aad);
   const sealed = serializeBlob(cipher);

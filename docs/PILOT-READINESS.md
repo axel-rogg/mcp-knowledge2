@@ -12,9 +12,9 @@ this service.
 ## TL;DR
 
 **Code is pilot-grade. Ops is pilot-grade once `bash deploy/fly/deploy.sh`
-runs cleanly once. The two known blockers are CROSS-SERVICE D-9
-(multi-kind search) and verifying the production AppRole boot path
-against a real `mcp-approval2`.**
+runs cleanly once. CROSS-SERVICE D-9 (multi-subtype search) was resolved
+by ADR-0004 (generic object model); the remaining blocker is verifying
+the production AppRole boot path against a real `mcp-approval2`.**
 
 ---
 
@@ -33,7 +33,9 @@ against a real `mcp-approval2`.**
   - User routes: JWT verified via JWKS (24 h cache) against
     `mcp-approval2`. `sub` claim becomes `current_user`.
   - Internal routes: static `SERVICE_TOKEN` (constant-time compare).
-- **Crypto** — AES-256-GCM with **AAD** (`<recordType>|<owner>|<id>|<kind>:<subtype>`)
+- **Crypto** — AES-256-GCM with **AAD** (`<recordType>|<owner>|<id>`,
+  see ADR-0004 — kind/subtype slot removed from AAD as part of generic
+  object model)
   preventing cross-user / cross-object ciphertext replay. Per-user DEKs
   resolved on-demand via `mcp-approval2` KMS internal API; never
   persisted in `mcp-knowledge2`.
@@ -41,13 +43,14 @@ against a real `mcp-approval2`.**
   embedding, so the embedding provider never sees raw emails / phones.
   (Embedding-inversion threat documented in
   [`SECURITY.md`](./SECURITY.md).)
-- **Object CRUD** — `/v1/objects` with `kind` discriminator
-  (`doc | skill | app_state | memo`), inline body ≤ 16 KB in Postgres
-  or external blob via presigned upload pipeline (`/v1/uploads/init`).
+- **Object CRUD** — `/v1/objects` generic-object model (free-form
+  `subtype` string, no DB-enforced discriminator — see ADR-0004),
+  inline body ≤ 16 KB in Postgres or external blob via presigned upload
+  pipeline (`/v1/uploads/init`).
 - **Share grants** — `/v1/shares` with role-based access control,
   enforced by RLS predicate `owner_or_shared(object_id)`.
 - **Hybrid search** — FTS (Postgres `tsvector`) ⊕ pgvector (cosine) →
-  RRF fusion with `k=60`, per-kind filter.
+  RRF fusion with `k=60`, optional `subtypes: string[]` filter.
 - **Cross-service contracts** —
   - `/v1/internal/erase-user` — admin-role DELETE across all tables
     for a user id; uses `DATABASE_ADMIN_URL` (BYPASSRLS).
@@ -94,7 +97,7 @@ against a real `mcp-approval2`.**
 
 | ID | Item | Why blocking | Effort |
 |---|---|---|---|
-| D-9 | **Server-side multi-kind search** — accept `kind: string \| string[]` in `/v1/search` | Approval-side tool requires it; current server rejects multi-kind queries with 400 | ½ day — extend zod schema + WHERE clause in `src/search/index.ts` |
+| ~~D-9~~ | ~~**Server-side multi-kind search**~~ | **Resolved by ADR-0004** — server accepts `subtypes: string[]` (free-form). | done |
 | AppRole | **Verify production AppRole boot path** — `mcp-approval2` KMS API works under load | KMS-Internal-API code is in but never exercised against a real prod approval | ½ day — load-test once `mcp-approval2` is deployed to Fly |
 | eslint | `src/crons/backup.ts` ESLint error (not runtime-affecting) | Quality only; not a pilot blocker but should be cleaned before "v1.0" | 10 min |
 
@@ -150,16 +153,18 @@ TOKEN=$(curl -sf https://mcp-approval2.fly.dev/v1/internal/debug-jwt \
 ID=$(curl -sf -X PUT https://mcp-knowledge2.fly.dev/v1/objects \
   -H "authorization: bearer $TOKEN" \
   -H "content-type: application/json" \
-  -d '{"kind":"doc","subtype":"note","body":"hello pilot"}' | jq -r .id)
+  -d '{"subtype":"file","body":"hello pilot"}' | jq -r .id)
 
 curl -sf -H "authorization: bearer $TOKEN" \
   https://mcp-knowledge2.fly.dev/v1/objects/$ID | jq .
 
 curl -sf -H "authorization: bearer $TOKEN" \
-  "https://mcp-knowledge2.fly.dev/v1/objects?kind=doc&limit=10" | jq .
+  "https://mcp-knowledge2.fly.dev/v1/objects?subtype=file&limit=10" | jq .
 
 curl -sf -H "authorization: bearer $TOKEN" \
-  "https://mcp-knowledge2.fly.dev/v1/search?q=pilot&kind=doc" | jq .
+  -X POST -H "content-type: application/json" \
+  -d '{"q":"pilot","subtypes":["file"]}' \
+  https://mcp-knowledge2.fly.dev/v1/search | jq .
 
 curl -sf -X DELETE -H "authorization: bearer $TOKEN" \
   https://mcp-knowledge2.fly.dev/v1/objects/$ID
@@ -202,7 +207,7 @@ When all 5 pass, we are **pilot-ready**.
 
 Before flipping the pilot live:
 
-- [ ] D-9 multi-kind search merged + smoke-tested
+- [x] D-9 multi-kind search — resolved by ADR-0004 (`subtypes: string[]`)
 - [ ] AppRole/KMS roundtrip verified against deployed mcp-approval2
 - [ ] `deploy/fly/deploy.sh` run end-to-end on a clean Fly org
 - [ ] All 5 smoke-test steps pass

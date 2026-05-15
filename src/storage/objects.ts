@@ -2,7 +2,7 @@
 //
 // Body storage: <= 16 KB → body_inline (BYTEA), else R2 under `objects/<id>`.
 // Crypto: AES-256-GCM with per-user DEK (resolved via KMS adapter per request)
-//         and AAD = '<recordType>|<owner_id>|<id>|<kind>:<subtype>'.
+//         and AAD = '<recordType>|<owner_id>|<id>'  (ADR-0004).
 
 import { and, desc, eq, isNull, lt, sql } from 'drizzle-orm';
 import { objects, objectRevisions, objectVectors, type ObjectRow } from '../db/schema.ts';
@@ -15,7 +15,7 @@ import { kms } from '../adapters/kms/index.ts';
 import { embeddingAdapter } from '../adapters/embed/vertex.ts';
 import { errBadRequest, errForbidden, errNotFound, AppError } from '../lib/errors.ts';
 import { requireContext } from '../lib/context.ts';
-import type { ObjectKind, Visibility } from '../types/domain.ts';
+import type { Visibility } from '../types/domain.ts';
 
 const INLINE_BODY_MAX = 16 * 1024;
 const R2_PREFIX = 'objects/';
@@ -38,7 +38,6 @@ function assertBlobKeyShape(blobKey: string, context: string): void {
 }
 
 export interface CreateObjectInput {
-  kind: ObjectKind;
   subtype?: string | null;
   title?: string | null;
   description?: string | null;
@@ -69,7 +68,6 @@ export interface UpdateObjectInput {
 export interface ObjectView {
   id: string;
   ownerId: string;
-  kind: ObjectKind;
   subtype: string | null;
   title: string | null;
   description: string | null;
@@ -94,7 +92,6 @@ function rowToView(r: ObjectRow): ObjectView {
   return {
     id: r.id,
     ownerId: r.ownerId,
-    kind: r.kind as ObjectKind,
     subtype: r.subtype,
     title: r.title,
     description: r.description,
@@ -155,8 +152,6 @@ export async function createObject(input: CreateObjectInput): Promise<ObjectView
     recordType: 'objects',
     ownerId: ctx.userId,
     objectId: id,
-    kind: input.kind,
-    subtype,
   });
   const cipher = await encrypt(key, input.body, aad);
 
@@ -190,7 +185,6 @@ export async function createObject(input: CreateObjectInput): Promise<ObjectView
       .values({
         id,
         ownerId: ctx.userId!,
-        kind: input.kind,
         subtype,
         title: input.title ?? null,
         description: input.description ?? null,
@@ -229,8 +223,8 @@ export async function createObject(input: CreateObjectInput): Promise<ObjectView
 // ─── Lookup helpers (dedup) ─────────────────────────────────────────────
 
 /**
- * Look up an existing object by (kind, bodyHash) for the current user.
- * Used by upstream tool layers (e.g. docs.put) to deduplicate
+ * Look up an existing object by (subtype?, bodyHash) for the current user.
+ * Used by upstream tool layers (e.g. wrapper-level docs.put) to deduplicate
  * content-addressable uploads — if the same bytes already exist, return
  * the existing id instead of inserting a second row.
  *
@@ -238,35 +232,35 @@ export async function createObject(input: CreateObjectInput): Promise<ObjectView
  * dedup is possible (and should not be — that would leak presence).
  */
 export async function getObjectByBodyHash(
-  kind: ObjectKind,
   bodyHash: string,
+  subtype?: string,
 ): Promise<ObjectView | null> {
   const ctx = requireContext();
   if (!ctx.userId) throw errBadRequest('user context required');
   return await withUserTx(ctx.userId, ctx.requestId, async (db) => {
+    const conds = [eq(objects.bodyHash, bodyHash), isNull(objects.deletedAt)];
+    if (subtype !== undefined) conds.push(eq(objects.subtype, subtype));
     const rows = await db
       .select()
       .from(objects)
-      .where(
-        and(eq(objects.kind, kind), eq(objects.bodyHash, bodyHash), isNull(objects.deletedAt)),
-      )
+      .where(and(...conds))
       .limit(1);
     return rows[0] ? rowToView(rows[0]) : null;
   });
 }
 
 /**
- * Look up an existing object by JSON-meta path == value, scoped to kind.
- * Used by upstream tool layers (e.g. skills.attach_resource → find by
- * meta_json.slug) when natural keys live in meta rather than as
- * first-class columns.
+ * Look up an existing object by JSON-meta path == value, optionally scoped
+ * to a subtype. Used by upstream tool layers (e.g. wrapper-level
+ * skills.attach_resource → find by meta_json.slug) when natural keys live
+ * in meta rather than as first-class columns.
  *
- * `metaPath` is a single top-level key (no dotted paths) for safety.
+ * `metaKey` is a single top-level key (no dotted paths) for safety.
  */
 export async function getObjectByMeta(
-  kind: ObjectKind,
   metaKey: string,
   metaValue: string,
+  subtype?: string,
 ): Promise<ObjectView | null> {
   const ctx = requireContext();
   if (!ctx.userId) throw errBadRequest('user context required');
@@ -276,16 +270,15 @@ export async function getObjectByMeta(
     throw errBadRequest(`invalid metaKey '${metaKey}'`);
   }
   return await withUserTx(ctx.userId, ctx.requestId, async (db) => {
+    const conds = [
+      isNull(objects.deletedAt),
+      sql`${objects.metaJson} ->> ${metaKey} = ${metaValue}`,
+    ];
+    if (subtype !== undefined) conds.push(eq(objects.subtype, subtype));
     const rows = await db
       .select()
       .from(objects)
-      .where(
-        and(
-          eq(objects.kind, kind),
-          isNull(objects.deletedAt),
-          sql`${objects.metaJson} ->> ${metaKey} = ${metaValue}`,
-        ),
-      )
+      .where(and(...conds))
       .limit(1);
     return rows[0] ? rowToView(rows[0]) : null;
   });
@@ -333,8 +326,6 @@ export async function readObject(
       recordType: 'objects',
       ownerId: row.ownerId,
       objectId: row.id,
-      kind: row.kind as ObjectKind,
-      subtype: row.subtype,
     });
     let cipher: Uint8Array;
     if (row.bodyInline) {
@@ -406,8 +397,6 @@ export async function updateObject(id: string, input: UpdateObjectInput): Promis
         recordType: 'objects',
         ownerId: row.ownerId,
         objectId: row.id,
-        kind: row.kind as ObjectKind,
-        subtype: row.subtype,
       });
       const cipher = await encrypt(key, input.body, aad);
       const bodyHash = await sha256Hex(input.body);
@@ -515,7 +504,6 @@ export async function restoreObject(id: string): Promise<void> {
 // ─── List ───────────────────────────────────────────────────────────────
 
 export interface ListOptions {
-  kind?: ObjectKind;
   subtype?: string;
   limit?: number;
   cursor?: number; // updated_at to paginate before
@@ -527,7 +515,6 @@ export async function listObjects(opts: ListOptions): Promise<{ items: ObjectVie
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
   return await withUserTx(ctx.userId, ctx.requestId, async (db) => {
     const conds = [isNull(objects.deletedAt)];
-    if (opts.kind) conds.push(eq(objects.kind, opts.kind));
     if (opts.subtype) conds.push(eq(objects.subtype, opts.subtype));
     if (opts.cursor !== undefined) conds.push(lt(objects.updatedAt, opts.cursor));
 

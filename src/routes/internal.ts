@@ -24,6 +24,7 @@ import { errBadRequest } from '../lib/errors.ts';
 import { logger } from '../lib/logger.ts';
 import { nowMs } from '../lib/ids.ts';
 import { syncFromApproval2 } from '../users/api.ts';
+import type { UserSyncInput } from '../users/api.ts';
 
 const EraseBody = z.object({
   user_id: z.string().uuid(),
@@ -135,7 +136,6 @@ export const internalRouter = new Hono()
     // F-8: audit result reflects whether anything is still pending.
     await emitAudit({
       action: 'user.erased',
-      resourceKind: 'system',
       resourceId: userId,
       result: stillPending.length === 0 ? 'success' : 'error',
       details: {
@@ -167,7 +167,7 @@ export const internalRouter = new Hono()
     // create/suspend/erase. Idempotent — returns `unchanged` when the
     // payload matches the current row.
     const body = UserSyncBody.parse(await c.req.json());
-    const syncInput: import('../users/api.ts').UserSyncInput = {
+    const syncInput: UserSyncInput = {
       approval2UserId: body.user_id,
       email: body.email,
       displayName: body.display_name ?? null,
@@ -179,7 +179,6 @@ export const internalRouter = new Hono()
     const result = await syncFromApproval2(syncInput);
     await emitAudit({
       action: 'user.synced',
-      resourceKind: 'system',
       resourceId: result.kcUserId,
       result: 'success',
       details: {

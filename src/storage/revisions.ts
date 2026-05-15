@@ -18,7 +18,6 @@ import { buildAad } from '../lib/crypto/aad.ts';
 import { decrypt, importKey } from '../lib/crypto/aes_gcm.ts';
 import { blobStore } from '../adapters/blob/s3.ts';
 import { kms } from '../adapters/kms/index.ts';
-import type { ObjectKind } from '../types/domain.ts';
 
 export interface RevisionMeta {
   version: number;
@@ -71,8 +70,6 @@ export async function readRevision(objectId: string, version: number): Promise<R
       recordType: 'object-revisions',
       ownerId: parent.ownerId,
       objectId,
-      kind: parent.kind as ObjectKind,
-      subtype: parent.subtype,
     });
 
     let cipher: Uint8Array;

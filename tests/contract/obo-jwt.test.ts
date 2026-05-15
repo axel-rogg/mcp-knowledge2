@@ -29,7 +29,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
-import { AddressInfo } from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { exportJWK, importPKCS8, importSPKI, SignJWT } from 'jose';
 
 // Mock the users-table lookup so verifyOnBehalfOf can resolve the OBO

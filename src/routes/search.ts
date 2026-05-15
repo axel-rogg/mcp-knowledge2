@@ -8,7 +8,7 @@ import { errBadRequest } from '../lib/errors.ts';
 
 const SearchBody = z.object({
   query: z.string().min(1).max(2000),
-  kind: z.enum(['doc', 'skill', 'app', 'memo']).optional(),
+  subtypes: z.array(z.string().min(1).max(32)).max(16).optional(),
   limit: z.number().int().positive().max(50).optional(),
 });
 
@@ -21,7 +21,7 @@ export const searchRouter = new Hono().post('/search', async (c) => {
 
   const hits = await hybridSearch({
     query: b.query,
-    ...(b.kind !== undefined ? { kind: b.kind } : {}),
+    ...(b.subtypes !== undefined ? { subtypes: b.subtypes } : {}),
     ...(b.limit !== undefined ? { limit: b.limit } : {}),
   });
   // NEVER include the query in audit details — search-privacy (PLAN §5.4)

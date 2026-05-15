@@ -37,7 +37,7 @@ to their end users.
 
 | Layer | Algorithm | Key source | AAD |
 |---|---|---|---|
-| Object body | AES-256-GCM | Per-user DEK resolved per request from mcp-approval2 KMS (Variante B) | `objects\|<owner_id>\|<id>\|<kind>:<subtype>` |
+| Object body | AES-256-GCM | Per-user DEK resolved per request from mcp-approval2 KMS (Variante B) | `objects\|<owner_id>\|<id>` (ADR-0004: kind/subtype slot removed) |
 | Backups | AES-256-GCM | `BACKUP_MASTER_KEY` env (rotated per deploy) | `backup\|<timestamp>` |
 
 The AAD bindings prevent ciphertext replay across users or across objects.

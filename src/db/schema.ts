@@ -39,7 +39,6 @@ export const objects = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     ownerId: uuid('owner_id').notNull(),
-    kind: text('kind').notNull(), // 'doc' | 'skill' | 'app' | 'memo'
     subtype: text('subtype'),
 
     title: text('title'),
@@ -102,9 +101,9 @@ export const objects = pgTable(
     lastUsedAt: bigint('last_used_at', { mode: 'number' }),
   },
   (t) => ({
-    ownerKind: index('idx_objects_owner_kind').on(t.ownerId, t.kind, t.subtype),
+    ownerSubtype: index('idx_objects_owner_subtype').on(t.ownerId, t.subtype),
     updated: index('idx_objects_updated').on(t.updatedAt),
-    ownerHash: index('idx_objects_owner_hash').on(t.ownerId, t.kind, t.bodyHash),
+    ownerHash: index('idx_objects_owner_hash').on(t.ownerId, t.bodyHash),
     deleted: index('idx_objects_deleted_at').on(t.deletedAt),
   }),
 );
@@ -188,7 +187,6 @@ export const shareGrants = pgTable(
   'share_grants',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    resourceKind: text('resource_kind').notNull(),
     resourceId: uuid('resource_id').notNull(),
     grantedTo: uuid('granted_to').notNull(),
     grantedBy: uuid('granted_by').notNull(),
@@ -224,7 +222,6 @@ export const auditLog = pgTable(
     ts: bigint('ts', { mode: 'number' }).notNull(),
     actorUserId: uuid('actor_user_id').notNull(),
     action: text('action').notNull(),
-    resourceKind: text('resource_kind'),
     resourceId: uuid('resource_id'),
     requestId: uuid('request_id'),
     result: text('result').notNull(),

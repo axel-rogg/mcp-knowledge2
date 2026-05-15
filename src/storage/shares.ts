@@ -1,9 +1,9 @@
 // Share-Grants — per-object ACL.
 //
-// Single-Tenant: shares are intra-firma. Sharing scope from PLAN §4.3:
-//   - doc / skill / app: shareable
-//   - memo: not shareable (owner-only by RLS — share_grants.resource_kind
-//           check constraint excludes 'memo')
+// Single-Tenant: shares are intra-firma. Per ADR-0004 (2026-05-15) all
+// subtypes (incl. memo) are uniformly shareable — the memo-block here and
+// the share_grants.resource_kind CHECK have both been removed. Wrapper
+// tools can layer per-subtype share policy on top if needed (caller-side).
 
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { shareGrants, objects } from '../db/schema.ts';
@@ -11,7 +11,7 @@ import { withUserTx } from '../db/client.ts';
 import { requireContext } from '../lib/context.ts';
 import { errBadRequest, errForbidden, errNotFound } from '../lib/errors.ts';
 import { nowMs } from '../lib/ids.ts';
-import type { SharePermission, SharedResourceKind } from '../types/domain.ts';
+import type { SharePermission } from '../types/domain.ts';
 
 export interface CreateShareInput {
   resourceId: string;
@@ -22,7 +22,6 @@ export interface CreateShareInput {
 
 export interface ShareView {
   id: string;
-  resourceKind: SharedResourceKind;
   resourceId: string;
   grantedTo: string;
   grantedBy: string;
@@ -39,20 +38,18 @@ export async function createShare(input: CreateShareInput): Promise<ShareView> {
   return await withUserTx(ctx.userId, ctx.requestId, async (db) => {
     // Look up the object: must be visible and owned by current user
     const rows = await db
-      .select({ id: objects.id, kind: objects.kind, ownerId: objects.ownerId })
+      .select({ id: objects.id, ownerId: objects.ownerId })
       .from(objects)
       .where(eq(objects.id, input.resourceId))
       .limit(1);
     const obj = rows[0];
     if (!obj) throw errNotFound(`object ${input.resourceId} not found or not visible`);
     if (obj.ownerId !== ctx.userId) throw errForbidden('only owner can share');
-    if (obj.kind === 'memo') throw errBadRequest('memos are not shareable');
     if (input.grantedTo === ctx.userId) throw errBadRequest('cannot share with yourself');
 
     const inserted = await db
       .insert(shareGrants)
       .values({
-        resourceKind: obj.kind as SharedResourceKind,
         resourceId: input.resourceId,
         grantedTo: input.grantedTo,
         grantedBy: ctx.userId!,
@@ -125,7 +122,6 @@ export async function listSharedWithMe(): Promise<ShareView[]> {
 function shareToView(r: typeof shareGrants.$inferSelect): ShareView {
   return {
     id: r.id,
-    resourceKind: r.resourceKind as SharedResourceKind,
     resourceId: r.resourceId,
     grantedTo: r.grantedTo,
     grantedBy: r.grantedBy,

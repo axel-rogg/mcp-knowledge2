@@ -40,8 +40,10 @@ import { errBadRequest } from '../lib/errors.ts';
 import { registerTool } from './tools.ts';
 import type { CallToolResult } from './types.ts';
 
-const KIND = z.enum(['doc', 'skill', 'app', 'memo']);
-type Kind = z.infer<typeof KIND>;
+// Subtype is free-form caller-convention post-ADR-0004. Storage does not
+// enforce the value; the regex below is an identifier-shape guard against
+// control characters / injection.
+const SUBTYPE = z.string().min(1).max(32).regex(/^[a-z][a-z0-9_:-]*$/);
 
 function jsonResult(data: unknown): CallToolResult {
   return {
@@ -67,8 +69,7 @@ export function registerAllTools(): void {
   // ─── objects.* ───────────────────────────────────────────────────────────
 
   const CreateInput = z.object({
-    kind: KIND,
-    subtype: z.string().max(64).optional(),
+    subtype: SUBTYPE.optional(),
     title: z.string().max(2048).optional(),
     description: z.string().max(8192).optional(),
     keywords: z.array(z.string().max(64)).max(64).optional(),
@@ -83,7 +84,7 @@ export function registerAllTools(): void {
 
   registerTool({
     name: 'objects.create',
-    description: 'Create a new object (doc/skill/app/memo). Body is base64-encoded.',
+    description: 'Create a new object. `subtype` is a free-form caller-convention string (e.g. "file", "skill_manifest", "memo", "app:composable"). Body is base64-encoded.',
     inputSchema: zodToJsonSchema(CreateInput),
     annotations: {
       title: 'Create object',
@@ -91,7 +92,7 @@ export function registerAllTools(): void {
       write: true,
       wysiwys: {
         display_template:
-          'Create {{kind}} "{{title}}" ({{#filename}}{{filename}}, {{/filename}}{{body_size_human}})',
+          'Create {{subtype}} "{{title}}" ({{#filename}}{{filename}}, {{/filename}}{{body_size_human}})',
       },
     },
     handler: async (args) => {
@@ -103,7 +104,6 @@ export function registerAllTools(): void {
       if (input.embed) await assertEmbedQuota(ctx.userId, ctx.requestId);
       try {
         const view = await createObject({
-          kind: input.kind,
           ...(input.subtype !== undefined ? { subtype: input.subtype } : {}),
           ...(input.title !== undefined ? { title: input.title } : {}),
           ...(input.description !== undefined ? { description: input.description } : {}),
@@ -118,14 +118,13 @@ export function registerAllTools(): void {
         });
         await emitAudit({
           action: 'object.create',
-          resourceKind: input.kind,
           resourceId: view.id,
           result: 'success',
         });
         return jsonResult(view);
       } catch (e) {
         await releaseObjectQuota(ctx.userId, ctx.requestId, body.byteLength);
-        await emitAudit({ action: 'object.create', resourceKind: input.kind, result: 'error' });
+        await emitAudit({ action: 'object.create', result: 'error' });
         throw e;
       }
     },
@@ -148,7 +147,7 @@ export function registerAllTools(): void {
     handler: async (args) => {
       const { id, include_body } = GetInput.parse(args);
       const r = await readObject(id, { includeBody: include_body ?? false });
-      await emitAudit({ action: 'object.read', resourceKind: r.view.kind, resourceId: id, result: 'success' });
+      await emitAudit({ action: 'object.read', resourceId: id, result: 'success' });
       return jsonResult({
         ...r.view,
         body_b64: r.body ? Buffer.from(r.body).toString('base64') : undefined,
@@ -157,25 +156,23 @@ export function registerAllTools(): void {
   });
 
   const ListInput = z.object({
-    kind: KIND.optional(),
-    subtype: z.string().max(64).optional(),
+    subtype: SUBTYPE.optional(),
     limit: z.number().int().positive().max(200).optional(),
     cursor: z.number().int().nonnegative().optional(),
   });
   registerTool({
     name: 'objects.list',
-    description: 'List objects with optional kind/subtype filter and pagination.',
+    description: 'List objects with optional subtype filter and pagination.',
     inputSchema: zodToJsonSchema(ListInput),
     annotations: {
       title: 'List objects',
       sensitivity: 'read',
       write: false,
-      wysiwys: { display_template: 'List {{#kind}}{{kind}} {{/kind}}objects' },
+      wysiwys: { display_template: 'List {{#subtype}}{{subtype}} {{/subtype}}objects' },
     },
     handler: async (args) => {
       const input = ListInput.parse(args);
       const out = await listObjects({
-        ...(input.kind ? { kind: input.kind as Kind } : {}),
         ...(input.subtype !== undefined ? { subtype: input.subtype } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
         ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
@@ -381,7 +378,6 @@ export function registerAllTools(): void {
       });
       await emitAudit({
         action: 'share.grant',
-        resourceKind: share.resourceKind,
         resourceId: input.resource_id,
         result: 'success',
         details: { granted_to: input.granted_to, scope: input.scope },
@@ -445,18 +441,18 @@ export function registerAllTools(): void {
 
   const SearchInput = z.object({
     query: z.string().min(1).max(2000),
-    kind: KIND.optional(),
+    subtypes: z.array(SUBTYPE).max(16).optional(),
     limit: z.number().int().positive().max(50).optional(),
   });
   registerTool({
     name: 'search',
-    description: 'Hybrid search (FTS + pgvector + RRF) over the caller\'s objects.',
+    description: 'Hybrid search (FTS + pgvector + RRF) over the caller\'s objects. Optional `subtypes` filter to scope to one or more caller-side categories.',
     inputSchema: zodToJsonSchema(SearchInput),
     annotations: {
       title: 'Search',
       sensitivity: 'read',
       write: false,
-      wysiwys: { display_template: 'Search "{{query}}"{{#kind}} in {{kind}}{{/kind}}' },
+      wysiwys: { display_template: 'Search "{{query}}"' },
     },
     handler: async (args) => {
       const input = SearchInput.parse(args);
@@ -465,7 +461,7 @@ export function registerAllTools(): void {
       await assertEmbedQuota(ctx.userId, ctx.requestId);
       const hits = await hybridSearch({
         query: input.query,
-        ...(input.kind ? { kind: input.kind as Kind } : {}),
+        ...(input.subtypes !== undefined ? { subtypes: input.subtypes } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
       });
       await emitAudit({ action: 'search.hybrid', result: 'success', details: { result_count: hits.length } });
@@ -497,7 +493,6 @@ export function registerAllTools(): void {
       });
       await emitAudit({
         action: 'upload.init',
-        resourceKind: 'upload',
         resourceId: out.uploadId,
         result: 'success',
       });
@@ -524,7 +519,6 @@ export function registerAllTools(): void {
       const status = await finalizeUpload(upload_id);
       await emitAudit({
         action: 'upload.finalize',
-        resourceKind: 'upload',
         resourceId: upload_id,
         result: 'success',
       });

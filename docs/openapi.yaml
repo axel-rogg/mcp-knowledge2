@@ -19,20 +19,23 @@ components:
       scheme: bearer
       bearerFormat: JWT
   schemas:
-    ObjectKind:
+    Subtype:
       type: string
-      enum: [doc, skill, app, memo]
+      pattern: '^[a-z][a-z0-9_:-]{0,31}$'
+      description: |
+        Free-form caller convention (ADR-0004). Storage interprets nothing
+        beyond the regex shape; wrappers (e.g., `lists.*`, `notes.*`,
+        `apps.*` in mcp-approval2) own the subtype-string semantics.
     SharePermission:
       type: string
       enum: [read, write]
     ObjectView:
       type: object
-      required: [id, ownerId, kind, bodySize, visibility, pinned, archived, refcount, currentVersion, createdAt, updatedAt]
+      required: [id, ownerId, bodySize, visibility, pinned, archived, refcount, currentVersion, createdAt, updatedAt]
       properties:
         id: { type: string, format: uuid }
         ownerId: { type: string, format: uuid }
-        kind: { $ref: '#/components/schemas/ObjectKind' }
-        subtype: { type: string, nullable: true }
+        subtype: { $ref: '#/components/schemas/Subtype', nullable: true }
         title: { type: string, nullable: true }
         description: { type: string, nullable: true }
         keywords: { type: array, items: { type: string }, nullable: true }
@@ -52,10 +55,9 @@ components:
         lastUsedAt: { type: integer, nullable: true }
     CreateObjectRequest:
       type: object
-      required: [kind, body_b64]
+      required: [body_b64]
       properties:
-        kind: { $ref: '#/components/schemas/ObjectKind' }
-        subtype: { type: string }
+        subtype: { $ref: '#/components/schemas/Subtype' }
         title: { type: string }
         description: { type: string }
         keywords: { type: array, items: { type: string } }
@@ -68,10 +70,9 @@ components:
         embed: { type: boolean }
     ShareView:
       type: object
-      required: [id, resourceKind, resourceId, grantedTo, grantedBy, scope, grantedAt]
+      required: [id, resourceId, grantedTo, grantedBy, scope, grantedAt]
       properties:
         id: { type: string, format: uuid }
-        resourceKind: { type: string, enum: [doc, skill, app] }
         resourceId: { type: string, format: uuid }
         grantedTo: { type: string, format: uuid }
         grantedBy: { type: string, format: uuid }
@@ -122,11 +123,8 @@ paths:
       summary: List visible objects (owner + shared)
       parameters:
         - in: query
-          name: kind
-          schema: { $ref: '#/components/schemas/ObjectKind' }
-        - in: query
           name: subtype
-          schema: { type: string }
+          schema: { $ref: '#/components/schemas/Subtype' }
         - in: query
           name: limit
           schema: { type: integer, minimum: 1, maximum: 100 }
@@ -290,9 +288,9 @@ paths:
     post:
       summary: Hybrid (FTS + vector) search
       description: |
-        Note: only a single `kind` is supported today (Cross-Service-Contract
-        drift D-9). The adapter sends `kinds: string[]`; that field is
-        silently ignored. Multi-kind filtering is a queued follow-up.
+        Post ADR-0004: filter via free-form `subtypes: string[]`
+        (no enum, no DB-enforced discriminator). Empty / omitted
+        `subtypes` returns hits across all subtypes.
       requestBody:
         required: true
         content:
@@ -302,7 +300,9 @@ paths:
               required: [query]
               properties:
                 query: { type: string }
-                kind: { $ref: '#/components/schemas/ObjectKind' }
+                subtypes:
+                  type: array
+                  items: { $ref: '#/components/schemas/Subtype' }
                 limit: { type: integer, minimum: 1, maximum: 50 }
       responses:
         '200':
@@ -316,11 +316,10 @@ paths:
                     type: array
                     items:
                       type: object
-                      required: [id, kind, score]
+                      required: [id, score]
                       properties:
                         id: { type: string, format: uuid }
-                        kind: { $ref: '#/components/schemas/ObjectKind' }
-                        subtype: { type: string, nullable: true }
+                        subtype: { $ref: '#/components/schemas/Subtype', nullable: true }
                         title: { type: string, nullable: true }
                         score: { type: number }
                         ftsRank: { type: number, nullable: true }

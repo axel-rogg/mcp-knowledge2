@@ -251,7 +251,7 @@ describe('objects roundtrip — Cross-Service Contract', () => {
   it('POST /v1/objects creates an object and returns the ObjectView shape', async () => {
     const r = await call('POST', '/v1/objects', {
       body: {
-        kind: 'doc',
+        subtype: 'doc',
         title: 'hello',
         description: 'first doc',
         keywords: ['a', 'b'],
@@ -262,7 +262,7 @@ describe('objects roundtrip — Cross-Service Contract', () => {
     expect(r.status).toBe(201);
     const view = (await r.json()) as Record<string, unknown>;
     expect(view).toMatchObject({
-      kind: 'doc',
+      subtype: 'doc',
       title: 'hello',
       description: 'first doc',
       visibility: 'private',
@@ -285,7 +285,7 @@ describe('objects roundtrip — Cross-Service Contract', () => {
 
   it('GET /v1/objects/:id returns the same object; ?expand=body adds body_b64', async () => {
     const create = await call('POST', '/v1/objects', {
-      body: { kind: 'doc', title: 't', body_b64: b64('payload') },
+      body: { subtype: 'doc', title: 't', body_b64: b64('payload') },
     });
     const created = (await create.json()) as { id: string };
     const readNoBody = await call('GET', `/v1/objects/${created.id}`);
@@ -302,7 +302,7 @@ describe('objects roundtrip — Cross-Service Contract', () => {
 
   it('PATCH /v1/objects/:id updates fields and increments currentVersion when body changes', async () => {
     const created = (await (
-      await call('POST', '/v1/objects', { body: { kind: 'doc', title: 'old', body_b64: b64('v1') } })
+      await call('POST', '/v1/objects', { body: { subtype: 'doc', title: 'old', body_b64: b64('v1') } })
     ).json()) as { id: string; currentVersion: number };
 
     const r = await call('PATCH', `/v1/objects/${created.id}`, {
@@ -318,7 +318,7 @@ describe('objects roundtrip — Cross-Service Contract', () => {
   it('GET /v1/objects paginates and returns next_cursor (not "cursor")', async () => {
     for (let i = 0; i < 3; i++) {
       await call('POST', '/v1/objects', {
-        body: { kind: 'doc', title: `t${i}`, body_b64: b64(`p${i}`) },
+        body: { subtype: 'doc', title: `t${i}`, body_b64: b64(`p${i}`) },
       });
       // Different updatedAt timestamps so cursor ordering is unambiguous
       await new Promise((res) => setTimeout(res, 5));
@@ -335,7 +335,7 @@ describe('objects roundtrip — Cross-Service Contract', () => {
 
   it('DELETE /v1/objects/:id soft-deletes (204) and the object disappears from list', async () => {
     const created = (await (
-      await call('POST', '/v1/objects', { body: { kind: 'doc', title: 'del-me', body_b64: b64('x') } })
+      await call('POST', '/v1/objects', { body: { subtype: 'doc', title: 'del-me', body_b64: b64('x') } })
     ).json()) as { id: string };
     const del = await call('DELETE', `/v1/objects/${created.id}`);
     expect(del.status).toBe(204);
@@ -347,13 +347,14 @@ describe('objects roundtrip — Cross-Service Contract', () => {
 describe('shares roundtrip — Cross-Service Contract', () => {
   it('POST /v1/objects/:id/shares requires snake_case body { granted_to, scope }', async () => {
     const created = (await (
-      await call('POST', '/v1/objects', { body: { kind: 'doc', title: 's', body_b64: b64('shareable') } })
+      await call('POST', '/v1/objects', { body: { subtype: 'doc', title: 's', body_b64: b64('shareable') } })
     ).json()) as { id: string };
 
-    // Contract D-6 — the adapter sends `{ resourceKind, grantedTo, scope }` which
-    // is rejected; the server expects snake_case.
+    // Contract D-6 (post ADR-0004): the adapter sends `{ grantedTo, scope }` —
+    // server expects snake_case. resourceKind is no longer part of the wire
+    // format (the kind discriminator was removed).
     const wrongShape = await call('POST', `/v1/objects/${created.id}/shares`, {
-      body: { resourceKind: 'doc', grantedTo: USER_B, scope: 'read' },
+      body: { grantedTo: USER_B, scope: 'read' },
     });
     expect(wrongShape.status).toBe(400);
 
@@ -363,7 +364,6 @@ describe('shares roundtrip — Cross-Service Contract', () => {
     expect(r.status).toBe(201);
     const share = (await r.json()) as Record<string, unknown>;
     expect(share).toMatchObject({
-      resourceKind: 'doc',
       resourceId: created.id,
       grantedTo: USER_B,
       grantedBy: USER_A,
@@ -376,7 +376,7 @@ describe('shares roundtrip — Cross-Service Contract', () => {
 
   it('GET /v1/objects/:id/shares wraps in { items: [...] }', async () => {
     const created = (await (
-      await call('POST', '/v1/objects', { body: { kind: 'doc', title: 's', body_b64: b64('x') } })
+      await call('POST', '/v1/objects', { body: { subtype: 'doc', title: 's', body_b64: b64('x') } })
     ).json()) as { id: string };
     await call('POST', `/v1/objects/${created.id}/shares`, {
       body: { granted_to: USER_B, scope: 'read' },
@@ -392,7 +392,7 @@ describe('shares roundtrip — Cross-Service Contract', () => {
 
   it('GET /v1/shared-with-me as the grantee surfaces the share', async () => {
     const created = (await (
-      await call('POST', '/v1/objects', { body: { kind: 'doc', title: 'cross', body_b64: b64('x') } })
+      await call('POST', '/v1/objects', { body: { subtype: 'doc', title: 'cross', body_b64: b64('x') } })
     ).json()) as { id: string };
     await call('POST', `/v1/objects/${created.id}/shares`, {
       body: { granted_to: USER_B, scope: 'read' },
@@ -406,7 +406,7 @@ describe('shares roundtrip — Cross-Service Contract', () => {
 
   it('DELETE /v1/shares/:share_id revokes (204) and removes from shared-with-me', async () => {
     const created = (await (
-      await call('POST', '/v1/objects', { body: { kind: 'doc', title: 'r', body_b64: b64('x') } })
+      await call('POST', '/v1/objects', { body: { subtype: 'doc', title: 'r', body_b64: b64('x') } })
     ).json()) as { id: string };
     const share = (await (
       await call('POST', `/v1/objects/${created.id}/shares`, {
@@ -423,24 +423,24 @@ describe('shares roundtrip — Cross-Service Contract', () => {
     expect(list.items).toEqual([]);
   });
 
-  it('memo kind cannot be shared (400)', async () => {
+  it('memo subtype is shareable (ADR-0004: uniform sharing across subtypes)', async () => {
     const memo = (await (
-      await call('POST', '/v1/objects', { body: { kind: 'memo', title: 'm', body_b64: b64('x') } })
+      await call('POST', '/v1/objects', { body: { subtype: 'memo', title: 'm', body_b64: b64('x') } })
     ).json()) as { id: string };
     const r = await call('POST', `/v1/objects/${memo.id}/shares`, {
       body: { granted_to: USER_B, scope: 'read' },
     });
-    expect(r.status).toBe(400);
+    expect(r.status).toBe(201);
   });
 });
 
 describe('search roundtrip — Cross-Service Contract', () => {
-  it('POST /v1/search accepts { query, kind, limit } and returns { items }', async () => {
+  it('POST /v1/search accepts { query, subtypes, limit } and returns { items }', async () => {
     await call('POST', '/v1/objects', {
-      body: { kind: 'doc', title: 'about cats', description: 'feline lore', body_b64: b64('cat'), embed: true },
+      body: { subtype: 'doc', title: 'about cats', description: 'feline lore', body_b64: b64('cat'), embed: true },
     });
     await call('POST', '/v1/objects', {
-      body: { kind: 'doc', title: 'about dogs', description: 'canine lore', body_b64: b64('dog'), embed: true },
+      body: { subtype: 'doc', title: 'about dogs', description: 'canine lore', body_b64: b64('dog'), embed: true },
     });
 
     const r = await call('POST', '/v1/search', { body: { query: 'cats', limit: 10 } });
@@ -451,18 +451,14 @@ describe('search roundtrip — Cross-Service Contract', () => {
     expect(body.items.length).toBeGreaterThan(0);
   });
 
-  it('rejects multi-kind search until D-9 is resolved (current behaviour)', async () => {
-    // Contract D-9 — adapter sends `kinds: ['doc', 'skill']`; server only
-    // accepts `kind: <single>`. Until the server accepts arrays, this is the
-    // documented failure mode.
+  it('accepts multi-subtype search via { subtypes: [...] } (D-9 resolved with kind-drop)', async () => {
+    // Contract D-9 (post ADR-0004): the kind discriminator is gone. Multi-
+    // category search is just `subtypes: [...]` and Postgres `ANY()` does
+    // the filter.
     const r = await call('POST', '/v1/search', {
-      body: { query: 'x', kinds: ['doc', 'skill'] },
+      body: { query: 'x', subtypes: ['doc', 'skill'] },
     });
-    // The server ignores the unknown `kinds` field (zod default is passthrough
-    // is NOT used — it's `.parse` on a closed schema). Extra keys are tolerated;
-    // the search runs without a kind filter. Document this so the adapter team
-    // knows: extra fields are silently ignored, not a hard error.
-    expect([200, 400]).toContain(r.status);
+    expect(r.status).toBe(200);
   });
 });
 
@@ -484,7 +480,7 @@ describe('error shape — Cross-Service Contract', () => {
 
   it('soft-delete idempotency follows RFC 7807 on second attempt', async () => {
     const created = (await (
-      await call('POST', '/v1/objects', { body: { kind: 'doc', title: 'dx', body_b64: b64('x') } })
+      await call('POST', '/v1/objects', { body: { subtype: 'doc', title: 'dx', body_b64: b64('x') } })
     ).json()) as { id: string };
     expect((await call('DELETE', `/v1/objects/${created.id}`)).status).toBe(204);
     // After soft-delete the object is not visible — second delete returns 404
@@ -500,10 +496,10 @@ describe('internal — erase-user', () => {
     // Seed: USER_A has two docs
     currentUserId = USER_A;
     await call('POST', '/v1/objects', {
-      body: { kind: 'doc', title: 'A1', body_b64: b64('p1') },
+      body: { subtype: 'doc', title: 'A1', body_b64: b64('p1') },
     });
     await call('POST', '/v1/objects', {
-      body: { kind: 'doc', title: 'A2', body_b64: b64('p2') },
+      body: { subtype: 'doc', title: 'A2', body_b64: b64('p2') },
     });
 
     const r = await app.request('http://test/v1/internal/erase-user', {

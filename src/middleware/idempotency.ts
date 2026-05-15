@@ -25,14 +25,14 @@ const IDEM_TTL_MS = 24 * 60 * 60 * 1000;
 // Encrypt with a dedicated AAD record-type so an idempotency cipher
 // can't be replayed into an objects-body decrypt path or vice versa.
 function idemAad(userId: string, idemKey: string): Uint8Array {
-  // Reuse buildAad shape: recordType|ownerId|objectId|kind:subtype.
-  // Map onto the same template but with kind='idem'/subtype=idemKey.
+  // Reuse buildAad shape: recordType|ownerId|objectId. Per ADR-0004 the
+  // kind/subtype slot has been removed; we encode the idemKey directly
+  // into the objectId slot so each idempotency entry has a distinct AAD
+  // (preventing cross-key replay).
   return buildAad({
     recordType: 'object-revisions', // closest neutral existing record type
     ownerId: userId,
-    objectId: 'idempotency',
-    kind: 'memo',
-    subtype: idemKey,
+    objectId: `idempotency:${idemKey}`,
   });
 }
 

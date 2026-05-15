@@ -6,7 +6,7 @@ import { deserializeBlob, serializeBlob } from '../../src/lib/crypto/serialize.t
 describe('aes-gcm', () => {
   it('round-trips arbitrary bytes', async () => {
     const key = await importKey(randomBytes(32));
-    const aad = new TextEncoder().encode('test|owner|obj|doc:');
+    const aad = new TextEncoder().encode('test|owner|obj');
     const plain = new TextEncoder().encode('hello world');
 
     const blob = await encrypt(key, plain, aad);
@@ -22,15 +22,11 @@ describe('aes-gcm', () => {
       recordType: 'objects',
       ownerId: 'user-a',
       objectId: 'obj-1',
-      kind: 'doc',
-      subtype: null,
     });
     const aadB = buildAad({
       recordType: 'objects',
       ownerId: 'user-b', // different owner
       objectId: 'obj-1',
-      kind: 'doc',
-      subtype: null,
     });
     const blob = await encrypt(key, plain, aadA);
     await expect(decrypt(key, blob, aadB)).rejects.toThrow();
@@ -42,26 +38,22 @@ describe('aes-gcm', () => {
 });
 
 describe('aad', () => {
-  it('serialises a stable string', () => {
+  it('serialises a stable string (ADR-0004: <recordType>|<owner>|<id>)', () => {
     const aad = buildAad({
       recordType: 'objects',
       ownerId: 'u-1',
       objectId: 'o-1',
-      kind: 'skill',
-      subtype: 'manifest',
     });
-    expect(new TextDecoder().decode(aad)).toBe('objects|u-1|o-1|skill:manifest');
+    expect(new TextDecoder().decode(aad)).toBe('objects|u-1|o-1');
   });
 
-  it('handles null subtype', () => {
+  it('uses the record-type discriminator for revisions vs live rows', () => {
     const aad = buildAad({
       recordType: 'object-revisions',
       ownerId: 'u-1',
       objectId: 'o-1',
-      kind: 'doc',
-      subtype: null,
     });
-    expect(new TextDecoder().decode(aad)).toBe('object-revisions|u-1|o-1|doc:');
+    expect(new TextDecoder().decode(aad)).toBe('object-revisions|u-1|o-1');
   });
 });
 
