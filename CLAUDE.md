@@ -130,3 +130,30 @@ mcp-knowledge2/
 - Migrations sind sequentiell nummeriert (`0000_*.sql`, `0001_*.sql`, …)
 - Cross-Repo-Referenzen via GitHub-URL (nicht relative Paths)
 - Wenn ein Tool im AS-3-Spec auftaucht: erst Spec-Dokument lesen, dann Code
+
+## Infrastructure-Policy: alles via Terraform
+
+**Default: Infrastruktur-Änderungen (Cloudflare AI Gateway, DNS, Doppler-Secrets,
+Cloud-Provider-Resources, GitHub-Repo-Settings) werden in
+`/workspaces/mcp-approval2/terraform/` gemacht, NICHT im Dashboard.**
+
+Schwester-Repo `mcp-approval2` ist der Terraform-Root (auch für KC2-Infrastruktur).
+Wenn du etwas für KC2 brauchst (eigener AI Gateway, API-Tokens, DNS-Record,
+Doppler-Project/Secrets, Hetzner-Volume, etc.):
+
+1. Datei unter `mcp-approval2/terraform/*.tf` editieren oder neu anlegen
+2. `terraform plan` zeigen — User reviewed Diff
+3. `terraform apply` — TF ruft die Provider-APIs
+4. Live verifizieren (`curl -I`, Dashboard-Stichprobe)
+5. Commit + push
+
+**Anti-Reflex-Test:** Wenn du gerade Dashboard-Klicks aufschreibst ("CF-Dashboard
+→ ...", "Doppler-UI → ..."): stop, prüfe ob es einen TF-Provider dafür gibt.
+Wenn ja → neu starten mit `.tf`-Edit. Auch Token-Werte können meist via
+TF-Resource-Outputs in Doppler gepiped werden (kein Copy-Paste).
+
+**Dokumentierte Ausnahmen** (Dashboard-Pfad legitim):
+- Provider unterstützt die Ressource nicht (z.B. AI Gateway Authentication Token
+  ist gateway-intern, kein eigenes TF-Resource — fallback: Authenticated=false)
+- Einmalige Operations-Tasks (Token-Revoke, Cache-Purge, Notfall-Toggle)
+- Out-of-Band-Resources die in `terraform/README.md` so markiert sind
