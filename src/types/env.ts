@@ -90,6 +90,12 @@ const EnvSchema = z.object({
   VERTEX_PROJECT: z.string().min(1).optional(),
   VERTEX_LOCATION: z.string().min(1).default('europe-west4'),
   VERTEX_MODEL: z.string().min(1).default('text-multilingual-embedding-002'),
+  // Three auth modes (tried in this order):
+  //   1. VERTEX_SERVICE_ACCOUNT_JSON      — inline SA JSON (Fly/Hetzner secret)
+  //   2. VERTEX_SERVICE_ACCOUNT_JSON_PATH — file mount (k8s/local dev)
+  //   3. Neither set                      — ADC via metadata server
+  //                                         (Cloud Run / GCE / GKE Workload-Identity)
+  VERTEX_SERVICE_ACCOUNT_JSON: z.string().min(1).optional(),
   VERTEX_SERVICE_ACCOUNT_JSON_PATH: z.string().min(1).optional(),
 
   // ── Cloudflare Workers AI + optional AI Gateway ───────────────────

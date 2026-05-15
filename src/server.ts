@@ -111,10 +111,15 @@ app.route('/', mcpRouter);
 // ─── Bootstrap ─────────────────────────────────────────────────────────────
 async function main() {
   const env = loadEnv();
-  await startCrons();
   const port = env.PORT;
+  // Start the HTTP listener BEFORE pg-boss boots so /health and /version
+  // respond immediately on cold-start. pg-boss.start() can take 1-5s against
+  // a freshly-attached Postgres, which used to push us past Fly's 10s health
+  // grace-period. /health/ready stays the gate for "ready to serve traffic".
   const server = serve({ fetch: app.fetch, port, hostname: '0.0.0.0' });
   logger.info({ port, env: env.NODE_ENV }, 'mcp-knowledge2 listening');
+  await startCrons();
+  logger.info('crons started');
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');

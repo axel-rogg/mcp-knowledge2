@@ -1,12 +1,18 @@
 # fly.toml — mcp-knowledge2
 #
-# Storage + Sharing + Hybrid-Search service. Sister to mcp-approval2.
-# JWTs are issued by mcp-approval2 and verified here via JWKS; per-user DEKs
-# are resolved via the mcp-approval2 internal API.
+# Storage + Sharing + Hybrid-Search service.
+#
+# AS-3 mode (autonomous): KC2 verifies user JWTs via two issuers — Google
+# OIDC (well-known) and its own OAuth-facade (/.well-known/jwks.json served
+# from in-process signing_keys). The legacy mcp-approval2 OBO bridge is
+# optional; enable by setting MCP_APPROVAL_JWKS_URL as a secret.
 #
 # Region: fra (Frankfurt). DSGVO posture — keep data in EU.
 # Postgres: attached via `fly postgres attach` (sets DATABASE_URL secret).
-# pgvector: enabled manually after postgres create — see deploy/fly/deploy.sh.
+# pgvector: enabled manually after `fly postgres create` — see
+#   deploy/fly/deploy.sh step 2.
+# Secrets: managed in Doppler (project=mcp-knowledge2, config=prd_fly).
+#   Sync to Fly with `bash deploy/fly/sync-secrets.sh`.
 
 app             = "mcp-knowledge2"
 primary_region  = "fra"
@@ -17,8 +23,9 @@ kill_timeout    = "30s"
   dockerfile = "Dockerfile"
 
 [deploy]
-  # Run migrations against the freshly-attached Postgres before swapping
-  # traffic to the new release.
+  # Apply any new drizzle migrations against the freshly-attached Postgres
+  # before swapping traffic to the new release. Migration files live in
+  # /app/drizzle/migrations inside the image (see Dockerfile runtime stage).
   release_command = "npm run db:migrate"
   strategy        = "rolling"
 
@@ -28,21 +35,41 @@ kill_timeout    = "30s"
   NODE_ENV  = "production"
   LOG_LEVEL = "info"
 
-  # ─── Auth — verify JWTs minted by mcp-approval2 ───────────────────────
-  JWKS_URL                 = "https://mcp-approval2.fly.dev/.well-known/jwks.json"
-  JWT_ISSUER               = "mcp-approval2"
-  JWT_AUDIENCE             = "mcp-knowledge2"
-  JWKS_CACHE_TTL_SECONDS   = "86400"
+  # ─── OAuth-facade (AS-3 K3/K4) ────────────────────────────────────────
+  # SELF_OAUTH_ISSUER is the public URL of this Fly app — appears as `iss`
+  # in tokens KC2 issues to MCP clients, and is the base for /.well-known.
+  SELF_OAUTH_ISSUER         = "https://mcp-knowledge2.fly.dev"
+  GOOGLE_OAUTH_REDIRECT_URI = "https://mcp-knowledge2.fly.dev/auth/google/callback"
+  # GOOGLE_OAUTH_CLIENT_ID + GOOGLE_OAUTH_CLIENT_SECRET come from Doppler.
 
-  # ─── Service-to-service to mcp-approval2 ──────────────────────────────
-  # Used for /v1/internal/* calls (DEK resolve via KMS API).
-  # MCP_APPROVAL_INTERNAL_TOKEN is a secret, not set here.
-  MCP_APPROVAL_BASE_URL = "https://mcp-approval2.fly.dev"
+  # Optional Workspace-`hd` allowlist + strict email whitelist (CSV, lower-cased).
+  # Keep both empty in [env] — set non-empty via secret if you want to lock down.
+  # GOOGLE_HD_ALLOWLIST   = ""
+  # ALLOWED_EMAILS        = ""
 
-  # ─── Embeddings — Vertex AI ───────────────────────────────────────────
-  # VERTEX_PROJECT + VERTEX_SERVICE_ACCOUNT_JSON come from secrets.
-  VERTEX_LOCATION = "europe-west4"
-  VERTEX_MODEL    = "text-embedding-005"
+  JWKS_CACHE_TTL_SECONDS = "86400"
+
+  # ─── Optional OBO from mcp-approval2 (AS-3 K7) ────────────────────────
+  # Uncomment + set MCP_APPROVAL_JWKS_URL secret if you want approval2 to
+  # be able to proxy KC2 with X-On-Behalf-Of headers. AS-3 default: off.
+  # MCP_APPROVAL_ISSUER = "mcp-approval2"
+
+  # ─── Embedding provider — Cloudflare Workers AI (default) ─────────────
+  # Multilingual bge-m3, 1024-dim. CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN
+  # come from Doppler.
+  EMBED_PROVIDER           = "cloudflare"
+  CLOUDFLARE_AI_GATEWAY_ID = "mcp-knowledge2"
+  CLOUDFLARE_AI_MODEL      = "@cf/baai/bge-m3"
+
+  # ─── KMS — hkdf_local for solo Pilot ──────────────────────────────────
+  # KMS_MASTER_KEY_B64 comes from Doppler. Switch to KMS_PROVIDER=openbao
+  # plus OPENBAO_* secrets once an OpenBao Transit Engine is provisioned.
+  KMS_PROVIDER = "hkdf_local"
+
+  # ─── Blob storage ─────────────────────────────────────────────────────
+  # Recommended for Fly: Tigris (https://fly.storage.tigris.dev) — sits in
+  # the same private network, no egress fees. All values come from Doppler.
+  BLOB_PATH_STYLE = "true"
 
   # ─── Database pool sizing ─────────────────────────────────────────────
   DATABASE_POOL_MAX = "10"
@@ -63,6 +90,8 @@ kill_timeout    = "30s"
     hard_limit = 120
 
   [[http_service.checks]]
+    # /health is light (no DB/blob touch). serve() comes up before pg-boss
+    # in src/server.ts so this responds immediately.
     grace_period = "10s"
     interval     = "30s"
     method       = "GET"
@@ -70,7 +99,9 @@ kill_timeout    = "30s"
     path         = "/health"
 
   [[http_service.checks]]
-    grace_period = "20s"
+    # /health/ready hits the DB + blob — needs more grace because pg-boss
+    # may still be starting (5s connect-timeout). Loosened to 30s.
+    grace_period = "30s"
     interval     = "60s"
     method       = "GET"
     timeout      = "8s"

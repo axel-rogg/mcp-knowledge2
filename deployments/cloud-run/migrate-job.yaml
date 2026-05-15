@@ -1,0 +1,58 @@
+# Cloud Run Job — applies drizzle migrations against the production DB.
+#
+# Cloud Run has no native release_command, so migrations run as a separate
+# Job before the Service is updated. The CI step is:
+#
+#   gcloud run jobs replace deployments/cloud-run/migrate-job.yaml \
+#     --region=__REGION__
+#   gcloud run jobs execute migrate-knowledge2 --region=__REGION__ --wait
+#   gcloud run services replace deployments/cloud-run/service.yaml \
+#     --region=__REGION__
+#
+# Placeholders are substituted by .github/workflows/deploy.yml:
+#   __PROJECT__   → GCP project id
+#   __IMAGE__     → europe-docker.pkg.dev/__PROJECT__/containers/mcp-knowledge2:<sha>
+#   __SQL_INST__  → Cloud SQL connection name (PROJECT:REGION:INSTANCE)
+#
+# The job uses DATABASE_ADMIN_URL (BYPASSRLS) so it can create the
+# _migrations bookkeeping table and grant default privileges.
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: migrate-knowledge2
+  labels:
+    cloud.googleapis.com/location: __REGION__
+spec:
+  template:
+    spec:
+      template:
+        spec:
+          serviceAccountName: knowledge-runtime@__PROJECT__.iam.gserviceaccount.com
+          timeoutSeconds: 600
+          maxRetries: 1
+          containers:
+            - image: __IMAGE__
+              command: ["npm"]
+              args: ["run", "db:migrate"]
+              resources:
+                limits:
+                  cpu: "1"
+                  memory: 512Mi
+              env:
+                - name: NODE_ENV
+                  value: production
+                - name: LOG_LEVEL
+                  value: info
+                # migrate.ts prefers DATABASE_URL but falls back to ADMIN.
+                # Use ADMIN here so the script can create _migrations and
+                # GRANT default privileges across schemas.
+                - name: DATABASE_ADMIN_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: knowledge-database-admin-url
+                      key: latest
+          # Mount Cloud SQL via the same socket the Service uses.
+      metadata:
+        annotations:
+          run.googleapis.com/cloudsql-instances: __SQL_INST__
+          run.googleapis.com/execution-environment: gen2
