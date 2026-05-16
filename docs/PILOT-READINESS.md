@@ -11,10 +11,21 @@ this service.
 
 ## TL;DR
 
-**Code is pilot-grade. Ops is pilot-grade once `bash deploy/fly/deploy.sh`
-runs cleanly once. CROSS-SERVICE D-9 (multi-subtype search) was resolved
-by ADR-0004 (generic object model); the remaining blocker is verifying
-the production AppRole boot path against a real `mcp-approval2`.**
+**Code is pilot-grade for both deployment targets (privat-Hetzner/Fly +
+business-GCP).** Ops is pilot-grade for privat once `bash deploy/fly/deploy.sh`
+runs cleanly once. CROSS-SERVICE D-9 (multi-subtype search) was resolved by
+ADR-0004 (generic object model).
+
+**Dual-Deploy-Architektur** (Stand 2026-05-15):
+
+| Profile | BLOB_PROVIDER | EMBED_PROVIDER | KMS_PROVIDER | Compute | Postgres | Monthly cost |
+|---|---|---|---|---|---|---|
+| `privat` | s3 (R2/Hetzner/Tigris) | cloudflare (Workers AI bge-m3) | openbao or hkdf_local | Fly.io / Hetzner VM | Neon or co-located | ~5 €/Monat |
+| `business` | gcs (native, Workload Identity) | vertex (text-multilingual-embedding-002) | cloud_kms | Cloud Run gen2 | Cloud SQL Postgres 16 | 30-80 €/Monat |
+
+Provider-switch is **env-driven**, no code edits. Both profiles share the
+same container image — the deployment target only changes env-vars + service-
+account-binding.
 
 ---
 

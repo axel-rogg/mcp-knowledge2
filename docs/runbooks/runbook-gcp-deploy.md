@@ -10,10 +10,12 @@ the deploy-orchestration source lives in [deploy/gcp/](../../deploy/gcp/).
 | Aspect | Value |
 |---|---|
 | Compute | Cloud Run gen2, region `europe-west4` |
-| Database | Cloud SQL Postgres 16, `cloudsql.enable_pgvector_extension=on` |
-| Blob storage | Two GCS buckets (`knowledge-eu`, `knowledge-backup-eu`) via S3-Interop (HMAC) |
-| Embeddings | Vertex AI (`text-multilingual-embedding-002`, 768-dim) via ADC |
-| Secrets | Doppler (project `mcp-knowledge2`, config `prd_gcp`) → Secret Manager → `secretKeyRef` |
+| Database | Cloud SQL Postgres 16, `cloudsql.enable_pgvector_extension=on`, CMEK-encrypted |
+| Blob storage | GCS Bucket EU-multi-region — **native SDK** (`BLOB_PROVIDER=gcs`) via Workload Identity Federation, no HMAC keys |
+| Embeddings | Vertex AI (`text-multilingual-embedding-002`, 768-dim) via ADC — Workload Identity, no SA-JSON |
+| KMS | Cloud KMS (`KMS_PROVIDER=cloud_kms`) — master key wrapped under `projects/.../cryptoKeys/master`, decrypted once at boot, then HKDF-derived per user |
+| Terraform | `mcp-approval2/terraform/environments/business/` (versions.tf + backend.tf + variables.tf + main.tf) provisions all GCP-resources + Doppler-Project |
+| Secrets | Doppler (project `mcp-knowledge2-business`, config `prd`) — DB-URL/blob/KMS/embed-vars auto-piped from TF outputs |
 | Authn | KC2 OAuth-facade (issues its own JWTs to MCP clients after Google OIDC login) |
 | Ingress | Public `*.run.app` (or custom-domain mapping) — required for OAuth callback |
 

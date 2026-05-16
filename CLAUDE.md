@@ -22,8 +22,8 @@
         │                                                │
    mcp-approval2                                  mcp-knowledge2 (THIS REPO)
    (Approval-Proxy, optional)                     • Postgres + pgvector (RLS)
-        │                                          • S3-compat Blob (R2/B2/GCS)
-        │ S2S:                                     • Vertex AI Embeddings (EU)
+        │                                          • Blob: S3 (R2/B2/Hetzner) or native GCS
+        │ S2S:                                     • Embeddings: CF Workers AI bge-m3 (default) or Vertex AI
         │ X-On-Behalf-Of                           • REST /v1/* + MCP /mcp (AS-3)
         │ + SERVICE_TOKEN                          • own DCR-OAuth-Facade (AS-3)
         │                                          • own users + invites (AS-3)
@@ -95,9 +95,12 @@ mcp-knowledge2/
 │   ├── routes/          — REST-Handler
 │   ├── auth/            — JWT + Service-Token (AS-3: Multi-Issuer + OBO)
 │   ├── adapters/
-│   │   ├── blob/        — S3-API (R2/B2/GCS/MinIO)
-│   │   ├── embed/       — Vertex AI text-embedding-005
-│   │   └── kms/         — DEK-Resolver (AS-3: switch to local OpenBao/hkdf)
+│   │   ├── blob/        — Factory: S3 (R2/B2/Hetzner/MinIO, default) ODER
+│   │   │                  native GCS (Workload Identity, business)
+│   │   ├── embed/       — Factory: Cloudflare Workers AI bge-m3 (default,
+│   │   │                  via AI Gateway) ODER Vertex AI fallback
+│   │   └── kms/         — DEK-Resolver: openbao (Hetzner) / cloud_kms (GCP)
+│   │                      / hkdf_local (dev)
 │   ├── db/              — Drizzle Schema + tx-scoped Pools
 │   ├── storage/         — objects/refs/tags/revisions/shares/uploads
 │   ├── search/          — FTS + Vector + RRF Hybrid

@@ -37,11 +37,26 @@ to their end users.
 
 | Layer | Algorithm | Key source | AAD |
 |---|---|---|---|
-| Object body | AES-256-GCM | Per-user DEK resolved per request from mcp-approval2 KMS (Variante B) | `objects\|<owner_id>\|<id>` (ADR-0004: kind/subtype slot removed) |
+| Object body | AES-256-GCM | Per-user DEK from `KmsProvider` (factory in `src/adapters/kms/`) | `objects\|<owner_id>\|<id>` (ADR-0004: kind/subtype slot removed) |
 | Backups | AES-256-GCM | `BACKUP_MASTER_KEY` env (rotated per deploy) | `backup\|<timestamp>` |
 
 The AAD bindings prevent ciphertext replay across users or across objects.
 Owner transfer therefore requires explicit re-encryption (Phase 5+).
+
+### KMS-Provider choice (`KMS_PROVIDER`)
+
+Three implementations of the per-user-DEK resolution, selected via env:
+
+| Provider | Where the master key lives | Crypto-strength | When to use |
+|---|---|---|---|
+| `openbao` | OpenBao Transit-Engine on the Hetzner VM | HSM-grade (software, key never leaves Transit) | Hetzner pilot — separate compose-service `openbao` |
+| `cloud_kms` | GCP Cloud KMS (encrypted master in env, decrypted once at boot, then HKDF-derived per user) | Cloud-KMS HSM at unwrap-time; master in-process after boot | GCP business — Cloud Run with Workload Identity Federation, no SA-JSON file |
+| `hkdf_local` | Env-var `KMS_MASTER_KEY_B64` | weakest — master is plaintext in Doppler | dev / solo with shared-master setups only |
+
+Rotation paths:
+- `openbao`: Transit-Engine key-versioning, multi-version reads supported
+- `cloud_kms`: re-wrap the master (`gcloud kms encrypt`) → Doppler-update → restart. Cloud KMS key-rotation alone does NOT rotate the wrapped master.
+- `hkdf_local`: new env-var → restart → all old DEKs become unreadable. Re-encrypt all object bodies offline first.
 
 ### Plaintext-by-design columns (F-22 from 2026-05-13 audit)
 
