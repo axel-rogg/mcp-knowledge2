@@ -7,17 +7,17 @@ the deploy-orchestration source lives in [deploy/gcp/](../../deploy/gcp/).
 
 ## At a glance
 
-| Aspect | Value |
+| Aspect | Value (as deployed by `deployments/cloud-run/service.yaml`) |
 |---|---|
 | Compute | Cloud Run gen2, region `europe-west4` |
-| Database | Cloud SQL Postgres 16, `cloudsql.enable_pgvector_extension=on`, CMEK-encrypted |
-| Blob storage | GCS Bucket EU-multi-region — **native SDK** (`BLOB_PROVIDER=gcs`) via Workload Identity Federation, no HMAC keys |
-| Embeddings | Vertex AI (`text-multilingual-embedding-002`, 768-dim) via ADC — Workload Identity, no SA-JSON |
-| KMS | Cloud KMS (`KMS_PROVIDER=cloud_kms`) — master key wrapped under `projects/.../cryptoKeys/master`, decrypted once at boot, then HKDF-derived per user |
-| Terraform | `mcp-approval2/terraform/environments/business/` (versions.tf + backend.tf + variables.tf + main.tf) provisions all GCP-resources + Doppler-Project |
-| Secrets | Doppler (project `mcp-knowledge2-business`, config `prd`) — DB-URL/blob/KMS/embed-vars auto-piped from TF outputs |
-| Authn | KC2 OAuth-facade (issues its own JWTs to MCP clients after Google OIDC login) |
-| Ingress | Public `*.run.app` (or custom-domain mapping) — required for OAuth callback |
+| Database | Cloud SQL Postgres 16, `cloudsql.enable_pgvector_extension=on`, region-default encryption (CMEK = follow-up) |
+| Blob storage | GCS bucket `knowledge-eu` accessed via **GCS S3-Interop** (HMAC keys, `BLOB_PROVIDER=s3` default, `BLOB_ENDPOINT=https://storage.googleapis.com`). A native-GCS adapter exists in [`src/adapters/blob/gcs.ts`](../../src/adapters/blob/gcs.ts) (`BLOB_PROVIDER=gcs`, Workload Identity, no HMAC keys) — wired in code but NOT yet selected in `service.yaml` (migration follow-up, see open items in [PILOT-READINESS.md](../PILOT-READINESS.md)). |
+| Embeddings | Vertex AI (`text-multilingual-embedding-002`, 768-dim) via ADC — Workload Identity on the runtime SA, no SA-JSON. **Schema is currently 1024-dim** (migration `0010_embedding_dim_1024.sql` for Cloudflare bge-m3) — running Vertex on this Cloud Run config requires either rolling the schema back to 768 or flipping `EMBED_PROVIDER=cloudflare`. |
+| KMS | `KMS_PROVIDER=hkdf_local` with `KMS_MASTER_KEY_B64` from Secret Manager. A `cloud_kms` adapter exists in [`src/adapters/kms/cloud_kms.ts`](../../src/adapters/kms/cloud_kms.ts) (wrapped master + boot-time decrypt + HKDF-derive) — wired in code but NOT yet selected in `service.yaml` (migration follow-up). |
+| Terraform | `mcp-approval2/terraform/environments/business/` (planned). Today bootstrap is via [`deploy/gcp/01-bootstrap.sh`](../../deploy/gcp/01-bootstrap.sh). |
+| Secrets | Doppler (project `mcp-knowledge2`, config `prd_gcp`) → mirrored into Secret Manager via [`deploy/gcp/sync-secrets.sh`](../../deploy/gcp/sync-secrets.sh). |
+| Authn | KC2 OAuth-facade (DCR + Google OIDC login → KC2-issued JWTs). Direct Google `id_token` also accepted. |
+| Ingress | Public `*.run.app` (or custom-domain mapping) — required for OAuth callback. |
 
 ## Bootstrap (one-time)
 
@@ -196,7 +196,8 @@ script is application-side — decrypt with `BACKUP_MASTER_KEY` then
    current one is broken, restore by adding the old value as a new
    version.
 4. Failover plan: re-deploy to Fly via `bash deploy/fly/deploy.sh` —
-   different region, same Doppler keys (different config `prd_fly`),
+   different region, same Doppler keys (Fly default config: `privat`,
+   distinct from GCP's `prd_gcp`),
    different DB but the application is stateless on top of Postgres.
 
 ## Costs (rough)

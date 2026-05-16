@@ -80,9 +80,17 @@ export async function hybridSearch(input: HybridSearchInput): Promise<HybridSear
     return sql`AND (${combined})`;
   })();
 
-  // Compute the query embedding in parallel with FTS query
+  // Compute the query embedding in parallel with FTS query.
+  //
+  // Truncate to a conservative 1500 chars before the embed call. bge-m3
+  // accepts ~512 tokens (~2000 chars UTF-8). Vertex multilingual accepts
+  // more but the truncation is still a net win — long queries lose
+  // semantic focus and waste tokens. The FTS branch above sees the full
+  // 2000-char query (cap from src/mcp/register_tools.ts SearchInput), so
+  // long queries still benefit from lexical matching.
+  const queryForEmbed = query.length > 1500 ? query.slice(0, 1500) : query;
   const queryEmbed = embeddingAdapter()
-    .embed([query], 'RETRIEVAL_QUERY')
+    .embed([queryForEmbed], 'RETRIEVAL_QUERY')
     .then((v) => v[0] ?? null)
     .catch(() => null);
 

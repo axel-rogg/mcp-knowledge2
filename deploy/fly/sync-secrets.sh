@@ -3,7 +3,7 @@
 #
 # Single source of truth for credentials is Doppler:
 #   doppler login
-#   doppler setup --project mcp-knowledge2 --config prd_fly
+#   doppler setup --project mcp-knowledge2 --config fly
 #
 # This script reads every key from the configured Doppler config and
 # pushes it to `fly secrets set` in one staged batch. Staging means Fly
@@ -17,7 +17,10 @@ set -euo pipefail
 
 APP_NAME="${APP_NAME:-mcp-knowledge2}"
 DOPPLER_PROJECT="${DOPPLER_PROJECT:-mcp-knowledge2}"
-DOPPLER_CONFIG="${DOPPLER_CONFIG:-prd_fly}"
+# Default `fly` — deploy-target-named Doppler-config (clear matching for
+# the Fly.io compute-target). Override via `DOPPLER_CONFIG=…` if you
+# maintain a customer-specific config (e.g. `fly_pilot1`).
+DOPPLER_CONFIG="${DOPPLER_CONFIG:-fly}"
 
 # Keys that fly.toml [env] sets directly — never push them as secrets,
 # Fly's "secret beats env" rule would silently shadow the TOML defaults.

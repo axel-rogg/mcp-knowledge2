@@ -8,9 +8,12 @@
 # optional; enable by setting MCP_APPROVAL_JWKS_URL as a secret.
 #
 # Region: fra (Frankfurt). DSGVO posture — keep data in EU.
-# Postgres: attached via `fly postgres attach` (sets DATABASE_URL secret).
-# pgvector: enabled manually after `fly postgres create` — see
-#   deploy/fly/deploy.sh step 2.
+# Postgres: Neon Free Tier (eu-central-1) since 2026-05-17, TF-managed in
+#   mcp-approval2/terraform/environments/privat/neon-knowledge2.tf. The TF
+#   apply pushes DATABASE_URL / DATABASE_ADMIN_URL into Doppler automatically.
+# pgvector + pg_trgm: one-time bootstrap via
+#   `psql "$DATABASE_ADMIN_URL" -c 'CREATE EXTENSION vector; CREATE EXTENSION pg_trgm;'`
+#   after the first TF apply (both roles are in neon_superuser, no GRANTs needed).
 # Secrets: managed in Doppler (project=mcp-knowledge2, config=fly).
 #   Sync to Fly with `bash deploy/fly/sync-secrets.sh`.
 

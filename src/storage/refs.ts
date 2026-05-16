@@ -1,7 +1,7 @@
 // Knowledge-graph refs between objects. RLS on object_refs delegates to
 // objects visibility (see migrations/0001_rls.sql).
 
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { objectRefs, objects } from '../db/schema.ts';
 import { withUserTx } from '../db/client.ts';
 import { requireContext } from '../lib/context.ts';
@@ -15,9 +15,15 @@ export interface AddRefInput {
   meta?: Record<string, unknown> | null;
 }
 
+/** Maximum graph depth searched for a cycle when adding a new ref. */
+const CYCLE_DETECTION_DEPTH = 32;
+
 export async function addRef(input: AddRefInput): Promise<void> {
   const ctx = requireContext();
   if (!ctx.userId) throw errBadRequest('user context required');
+  if (input.fromId === input.toId) {
+    throw errBadRequest('self-ref not allowed (from_id === to_id)');
+  }
 
   await withUserTx(ctx.userId, ctx.requestId, async (db) => {
     // verify both ends visible under RLS
@@ -28,6 +34,31 @@ export async function addRef(input: AddRefInput): Promise<void> {
     if (visible.length < 2) {
       throw errNotFound('one or both objects not found or not visible');
     }
+
+    // Cycle detection: would adding (from → to) create a cycle?
+    // Reachable if `from` is already reachable from `to` (forward traversal).
+    // Bounded BFS up to CYCLE_DETECTION_DEPTH hops — typical knowledge-graphs
+    // stay shallow, but this caps the worst-case query cost.
+    const seen = new Set<string>([input.toId]);
+    let frontier: string[] = [input.toId];
+    for (let depth = 0; depth < CYCLE_DETECTION_DEPTH && frontier.length > 0; depth++) {
+      const r = await db
+        .select({ toId: objectRefs.toId })
+        .from(objectRefs)
+        .where(inArray(objectRefs.fromId, frontier));
+      const next: string[] = [];
+      for (const row of r) {
+        if (row.toId === input.fromId) {
+          throw errBadRequest('ref would create a cycle in the knowledge graph');
+        }
+        if (!seen.has(row.toId)) {
+          seen.add(row.toId);
+          next.push(row.toId);
+        }
+      }
+      frontier = next;
+    }
+
     const inserted = await db
       .insert(objectRefs)
       .values({

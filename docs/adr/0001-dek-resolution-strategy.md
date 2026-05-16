@@ -1,7 +1,9 @@
 # ADR 0001 — DEK Resolution Strategy
 
-**Status:** Accepted, 2026-05-13
-**Plan reference:** PLAN-architecture-v2 §3.3
+**Status:** ⛔ **Superseded by AS-3 (2026-05-15)** — see [PLAN-as3-autonomous.md §1.3 (K9)](../plans/active/PLAN-as3-autonomous.md). The "Variant B / Internal-API DEK resolver" described below is no longer the implementation. Post AS-3 the service holds its own KMS provider (factory in [`src/adapters/kms/`](../../src/adapters/kms/)): `hkdf_local` (dev), `openbao` (Hetzner Transit), or `cloud_kms` (GCP wrapped-master + HKDF-derive). The `internal_api.ts` module mentioned under "Consequences" has been deleted.
+
+**Original status:** Accepted, 2026-05-13
+**Plan reference (original):** PLAN-architecture-v2 §3.3
 
 ## Context
 

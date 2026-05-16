@@ -109,12 +109,22 @@ spec:
               valueFrom: { secretKeyRef: { name: knowledge-service-token, key: latest } }
 
             # ─── KMS ───────────────────────────────────────────────────────
+            # Currently shipping `hkdf_local` (master in Secret Manager).
+            # Migration to `cloud_kms` (boot-time decrypt of a Cloud-KMS-
+            # wrapped master + HKDF-derive per user) is a follow-up:
+            # flip KMS_PROVIDER=cloud_kms and replace KMS_MASTER_KEY_B64
+            # with CLOUD_KMS_KEY_NAME + CLOUD_KMS_WRAPPED_MASTER_B64. The
+            # adapter is in src/adapters/kms/cloud_kms.ts and ready.
             - name: KMS_PROVIDER
               value: hkdf_local
             - name: KMS_MASTER_KEY_B64
               valueFrom: { secretKeyRef: { name: knowledge-kms-master-key, key: latest } }
 
             # ─── Blob storage — GCS via S3-Interop (HMAC keys) ─────────────
+            # The native-GCS adapter (src/adapters/blob/gcs.ts) is wired in
+            # code and uses Workload Identity (no HMAC keys, native signed
+            # URLs). Migration: drop BLOB_ENDPOINT + BLOB_*_KEY, set
+            # BLOB_PROVIDER=gcs and GCS_PROJECT_ID. Follow-up.
             - name: BLOB_ENDPOINT
               value: "https://storage.googleapis.com"
             - name: BLOB_REGION
@@ -132,6 +142,12 @@ spec:
             # The Vertex adapter falls back to ADC (metadata-server) when
             # neither VERTEX_SERVICE_ACCOUNT_JSON nor _PATH is set. Grant
             # roles/aiplatform.user to the runtime SA.
+            #
+            # ⚠️ DIMENSION-MISMATCH: schema (migration 0010) ships 1024-dim
+            # for Cloudflare bge-m3. Vertex text-multilingual-embedding-002
+            # returns 768-dim. Either flip EMBED_PROVIDER=cloudflare (and
+            # add the CF secrets below) or roll the schema back to 768-dim
+            # before going live with Vertex here.
             - name: EMBED_PROVIDER
               value: vertex
             - name: VERTEX_PROJECT

@@ -18,18 +18,42 @@ Single-tenant (1 firma = 1 instance), multi-user, per-object sharing via RLS.
 
 ## Architecture in 30 seconds
 
+Post AS-3 (2026-05-15) `mcp-knowledge2` is an **autonomous** MCP- and
+REST-service. It runs its own OAuth-2.1 facade (DCR + Google login) and
+verifies tokens from three issuers in parallel:
+
 ```
-                            JWT (60s TTL, signed by mcp-approval2)
-   mcp-approval2  ──────────────────────────────────────►   mcp-knowledge2
-   (auth / tools)                                           (this repo)
-                                                                │
-                            ┌───────────────────────────────────┼─────────┐
-                            ▼                                   ▼         ▼
-                   Postgres + pgvector              S3-compat blob   Vertex AI
-                   • objects + shares + audit          (R2/B2/GCS)   (text-embed-005)
-                   • RLS on owner_or_shared
-                   • per-user DEK envelope-encryption
+   Google OIDC (authoritative IdP)
+        ▲
+        │ id_token verify via JWKS
+        │
+   ┌────┴───────────────────────────────────────────────────────────┐
+   │                                                                │
+   ▼                                                                ▼
+   mcp-approval2 (optional approval-proxy)                  Claude.ai / direct caller
+        │                                                                 │
+        │ S2S: Bearer <SERVICE_TOKEN> + X-On-Behalf-Of: <jwt>             │ Bearer <kc2-jwt>
+        ▼                                                                 │
+   mcp-knowledge2  ◄─────────────────────────────────────────────────────┘
+        │
+        ├─► Postgres 16 + pgvector (RLS, per-request `app.current_user`)
+        ├─► Blob: S3-compatible (R2 / B2 / Hetzner OS / MinIO / Tigris) — or native GCS
+        ├─► Embeddings: Cloudflare Workers AI bge-m3 (default, 1024-dim) — or Vertex AI fallback
+        └─► KMS: HKDF-local (dev) / OpenBao (Hetzner) / Cloud KMS (GCP)
 ```
+
+User-routes accept either a JWT issued by KC2's own facade or one issued
+by Google OIDC. Approval-proxy mode is an **opt-in** path enabled by
+setting `MCP_APPROVAL_JWKS_URL` (see [CROSS-SERVICE-CONTRACT.md](./docs/CROSS-SERVICE-CONTRACT.md)).
+
+**Compute-Targets.** Active pilot line is **Fly.io Frankfurt** as a
+Node-22 container (Cloud Run / Hetzner / Railway documented as
+alternatives). Cloudflare Workers as a compute target has been
+evaluated and intentionally parked — cost factor 4-6× higher (Neon Pro
+required) and 6-8 days of refactor work without a concrete trigger.
+Active pilot strategy: [docs/STRATEGIE-pilot.md](./docs/STRATEGIE-pilot.md).
+Parked dual-runtime architecture (re-startable if a Workers trigger appears):
+[docs/STRATEGIE.md](./docs/STRATEGIE.md).
 
 ## Quickstart (local dev)
 
@@ -53,15 +77,18 @@ bash scripts/smoke.sh
 src/
 ├── server.ts             Entry point — Hono app + crons + graceful shutdown
 ├── routes/               REST handlers (objects, shares, search, uploads, internal, health)
-├── auth/                 JWT + service-token middlewares
+├── auth/                 multi-issuer JWT verifier (Google + KC2-self + OBO) + service-token
+│   └── oauth_facade/     DCR + /authorize + /token + JWKS + discovery (RFC-8414)
+├── mcp/                  Streamable-HTTP /mcp endpoint + 17 REST-wrapped tools
+├── users/                users + invites registry (AS-3 K2)
 ├── middleware/           context, idempotency, error, request_log
 ├── db/                   schema (Drizzle) + tx-scoped pool (`withUserTx`, `withAdminTx`)
 ├── storage/              objects, refs, tags, revisions, shares, uploads
 ├── search/               FTS + vector + RRF hybrid
 ├── adapters/
-│   ├── blob/             S3-compatible (R2/B2/GCS/MinIO)
-│   ├── embed/            Vertex AI (text-embedding-005, dim=768)
-│   └── kms/              Internal-API DEK resolver (Variante B)
+│   ├── blob/             factory: `s3` (R2/B2/Hetzner OS/MinIO/GCS-S3-Interop) | `gcs` (native, Workload Identity)
+│   ├── embed/            factory: `cloudflare` (Workers AI bge-m3, 1024-dim, default) | `vertex` (text-multilingual-embedding-002, 768-dim)
+│   └── kms/              factory: `hkdf_local` (dev) | `openbao` (Hetzner Transit) | `cloud_kms` (GCP wrapped master + HKDF derive)
 ├── lib/
 │   ├── crypto/           AES-256-GCM + AAD builder + serialise
 │   ├── pii/              maskPII — applied BEFORE embedding
@@ -71,30 +98,52 @@ src/
 │   └── logger.ts         pino with PII-aware redact rules
 ├── quota/                per-user limits enforcement
 ├── observability/        audit emitter, prom-metrics
-├── crons/                pg-boss schedules (sweep, gc, backup)
+├── crons/                pg-boss schedules (sweep, gc, backup, orphan-blob-cleanup)
 └── types/                env + domain primitives
 
-drizzle/migrations/       0000_init.sql + 0001_rls.sql
+drizzle/migrations/       0000_init … 0010_embedding_dim_1024 (11 sequential migrations)
 deployments/              docker-compose (dev + prod), cloud-run yaml, caddy
-tests/                    unit + integration (testcontainers) + smoke shell
+deploy/                   fly/ + gcp/ — provider-specific bootstrap + secret-sync
+tests/                    unit + contract (4) + integration (testcontainers)
 ```
 
-## Auth model
+## Auth model (post AS-3)
 
-- **`/v1/*` user routes** — JWT signed by mcp-approval2, validated via JWKS
-  (cached 24h). `sub` claim is the user id, propagated as
+- **`/v1/*` user routes** — accept either:
+  1. A JWT issued by KC2's own OAuth-facade (`iss = SELF_OAUTH_ISSUER`,
+     `aud = mcp-knowledge2`) — minted via the DCR flow at
+     `/.well-known/oauth-authorization-server`.
+  2. A Google OIDC `id_token` (`iss = https://accounts.google.com`,
+     `aud = GOOGLE_OAUTH_CLIENT_ID`) — used by direct Claude.ai access.
+  3. Optional proxy-mode: `mcp-approval2` forwards calls with
+     `Authorization: Bearer <SERVICE_TOKEN>` + `X-On-Behalf-Of: <jwt>`.
+     Enabled by setting `MCP_APPROVAL_JWKS_URL` — off by default.
+  The `sub` claim resolves through `users` to a UUID propagated as
   `app.current_user` into the Postgres session for RLS.
-- **`/v1/internal/*` service routes** — static `SERVICE_TOKEN` (env). Use
-  admin DB role (BYPASSRLS) for cross-user maintenance like
-  `erase-user`.
-- **No public endpoints other than** `/health`, `/version`, `/metrics`.
+- **`/v1/internal/*` service routes** — static `SERVICE_TOKEN` (env,
+  constant-time-compared). Uses the admin DB role (BYPASSRLS) for
+  cross-user maintenance like `erase-user` and `users/sync`.
+- **`/mcp`** — same auth stack as `/v1/*` (JWT or OBO). Streamable-HTTP
+  transport. 17 tools registered (objects.* / shares.* / search /
+  uploads.*) — see [`src/mcp/register_tools.ts`](./src/mcp/register_tools.ts).
+- **Public**: `/health`, `/health/ready`, `/version`, `/metrics`,
+  `/.well-known/oauth-authorization-server`, `/.well-known/jwks.json`,
+  `/oauth/*` (DCR + authorize + token + Google-callback).
+- **Optional strict allowlist**: `ALLOWED_EMAILS` (CSV) blocks any
+  OAuth-callback whose verified email is not in the list — defense-in-depth
+  on top of Google's own Test-Users config. Empty = open.
 
 ## Encryption summary
 
 | Layer | Where | Key |
 |---|---|---|
-| Body + description (per object) | App | DEK from mcp-approval2 KMS (resolved per request, never stored) |
-| Backups | `pg_dump` → AES-GCM → blob | `BACKUP_MASTER_KEY` env (separate from DEKs) |
+| Object body (per object) | App | Per-user DEK from `KmsProvider` factory: `hkdf_local` (env-master) / `openbao` (Transit-Engine) / `cloud_kms` (Cloud-KMS-wrapped master + HKDF derive). Resolved per request, never stored. |
+| Backups | `pg_dump` → AES-GCM → blob | `BACKUP_MASTER_KEY` env (separate from DEKs; also used to encrypt the OAuth-facade signing keys at rest) |
+| OAuth-facade signing keys | `signing_keys` table, EdDSA | private key AES-256-GCM-wrapped under `BACKUP_MASTER_KEY` |
+
+Plaintext-by-design columns: `title`, `description`, `keywords_json`,
+`trigger_hints` — they feed FTS and the embedding pipeline. Put sensitive
+content into `body` (encrypted). See [docs/SECURITY.md §"Plaintext-by-design columns"](./docs/SECURITY.md#plaintext-by-design-columns-f-22-from-2026-05-13-audit).
 
 **AAD** = `<recordType>|<owner_id>|<object_id>` (post-ADR-0004) —
 prevents cross-user and cross-object ciphertext replay. Owner-transfer

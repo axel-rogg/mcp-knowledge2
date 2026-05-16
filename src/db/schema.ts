@@ -352,7 +352,7 @@ export const userQuotas = pgTable('user_quotas', {
   userId: uuid('user_id').primaryKey(),
   objectCountMax: integer('object_count_max').notNull().default(10_000),
   storageBytesMax: bigint('storage_bytes_max', { mode: 'number' }).notNull().default(5_368_709_120),
-  embedCallsPerDay: integer('embed_calls_per_day').notNull().default(1_000),
+  embedCallsPerDay: integer('embed_calls_per_day').notNull().default(5_000),
   searchQpsBurst: integer('search_qps_burst').notNull().default(30),
 
   objectCountUsed: integer('object_count_used').notNull().default(0),

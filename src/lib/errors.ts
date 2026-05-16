@@ -42,6 +42,9 @@ export const errConflict = (detail: string, extra?: Record<string, unknown>) =>
 export const errQuotaExceeded = (detail: string, extra?: Record<string, unknown>) =>
   new AppError(429, 'https://problems.knowledge2/quota-exceeded', detail, extra);
 
+export const errTooManyRequests = (detail: string, extra?: Record<string, unknown>) =>
+  new AppError(429, 'https://problems.knowledge2/too-many-requests', detail, extra);
+
 export const errInternal = (detail: string) =>
   new AppError(500, 'about:blank', detail);
 

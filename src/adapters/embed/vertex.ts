@@ -12,6 +12,7 @@ import { createSign } from 'node:crypto';
 import { loadEnv } from '../../types/env.ts';
 import { maskPII } from '../../lib/pii/mask.ts';
 import { logger } from '../../lib/logger.ts';
+import { retryWithBackoff } from '../../lib/retry.ts';
 import type { EmbeddingAdapter, EmbeddingTaskType } from './interface.ts';
 
 interface ServiceAccount {
@@ -144,28 +145,55 @@ export class VertexEmbeddingAdapter implements EmbeddingAdapter {
     }
     const masked = texts.map(maskPII);
     const url = `https://${env.VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${env.VERTEX_PROJECT}/locations/${env.VERTEX_LOCATION}/publishers/google/models/${this.model}:predict`;
+    const dims = this.dimensions;
 
-    const token = await getAccessToken();
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${token}`,
-        'content-type': 'application/json',
+    // Retry only on 5xx / 429 / network errors. 4xx (bad auth, bad input)
+    // is deterministic — don't double the cost.
+    return retryWithBackoff(
+      async () => {
+        const token = await getAccessToken();
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            instances: masked.map((t) => ({ content: t, task_type: taskType })),
+            parameters: { outputDimensionality: dims },
+          }),
+        });
+        if (!r.ok) {
+          const body = await r.text();
+          logger.error({ status: r.status, body }, 'vertex embed failed');
+          throw new VertexEmbedError(r.status, `vertex embed failed: ${r.status}`);
+        }
+        const j = (await r.json()) as {
+          predictions: { embeddings: { values: number[] } }[];
+        };
+        return j.predictions.map((p) => p.embeddings.values);
       },
-      body: JSON.stringify({
-        instances: masked.map((t) => ({ content: t, task_type: taskType })),
-        parameters: { outputDimensionality: this.dimensions },
-      }),
-    });
-    if (!r.ok) {
-      const body = await r.text();
-      logger.error({ status: r.status, body }, 'vertex embed failed');
-      throw new Error(`vertex embed failed: ${r.status}`);
-    }
-    const j = (await r.json()) as {
-      predictions: { embeddings: { values: number[] } }[];
-    };
-    return j.predictions.map((p) => p.embeddings.values);
+      {
+        maxAttempts: 3,
+        baseDelayMs: 250,
+        maxDelayMs: 4_000,
+        totalBudgetMs: 25_000,
+        onRetry: (attempt, err, delayMs) =>
+          logger.warn(
+            { attempt, delayMs, err: (err as Error).message },
+            'vertex embed retrying',
+          ),
+      },
+    );
+  }
+}
+
+class VertexEmbedError extends Error {
+  readonly status: number;
+  constructor(status: number, msg: string) {
+    super(msg);
+    this.name = 'VertexEmbedError';
+    this.status = status;
   }
 }
 

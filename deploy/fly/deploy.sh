@@ -3,7 +3,7 @@
 #
 # Prereqs:
 #   • flyctl installed and `fly auth login` done
-#   • doppler CLI installed and `doppler setup --project mcp-knowledge2 --config prd_fly`
+#   • doppler CLI installed and `doppler setup --project mcp-knowledge2 --config fly`
 #     done. All sensitive values are pulled from Doppler; nothing is
 #     prompted from the shell. See deploy/fly/README.md for the canonical
 #     list of secrets you must have populated in Doppler before running
@@ -16,10 +16,15 @@
 set -euo pipefail
 
 APP_NAME="${APP_NAME:-mcp-knowledge2}"
-PG_NAME="${PG_NAME:-mcp-knowledge2-pg}"
+# PG is Neon now (TF-managed in mcp-approval2/terraform/environments/privat/
+# neon-knowledge2.tf). Region var kept for the Fly app only.
 REGION="${REGION:-fra}"
 DOPPLER_PROJECT="${DOPPLER_PROJECT:-mcp-knowledge2}"
-DOPPLER_CONFIG="${DOPPLER_CONFIG:-prd_fly}"
+# Default `fly` — deploy-target-named Doppler-config (clear matching for
+# the Fly.io compute-target). Older setups used `privat`; that config
+# still exists as backup. Override via `DOPPLER_CONFIG=…` if you maintain
+# a customer-specific config (e.g. `fly_pilot1`).
+DOPPLER_CONFIG="${DOPPLER_CONFIG:-fly}"
 
 step() { printf '\n\033[1;36m▸ %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m! %s\033[0m\n' "$*"; }
@@ -32,50 +37,31 @@ command -v jq      >/dev/null 2>&1 || die "jq not installed"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # ─── 1. App ───────────────────────────────────────────────────────────
+# Alternativ kann die App-Existenz via Terraform gemanagt werden — siehe
+# docs/plans/active/PLAN-fly-terraform.md + mcp-approval2/terraform/
+# environments/privat/knowledge2-fly.tf. In dem Fall hat `terraform apply`
+# die App bereits angelegt; der Check unten skippt dann sauber.
 step "App: create '$APP_NAME' in org (if missing)"
 if fly apps list 2>/dev/null | awk '{print $1}' | grep -qx "$APP_NAME"; then
-  warn "app '$APP_NAME' already exists — skipping create"
+  warn "app '$APP_NAME' already exists — skipping create (TF-managed or prior flyctl run)"
 else
   fly apps create "$APP_NAME" --org personal
 fi
 
-# ─── 2. Postgres cluster + pgvector ───────────────────────────────────
-step "Postgres: provision cluster '$PG_NAME' (region=$REGION)"
-if fly apps list 2>/dev/null | awk '{print $1}' | grep -qx "$PG_NAME"; then
-  warn "postgres app '$PG_NAME' already exists — skipping create"
+# ─── 2. Postgres ──────────────────────────────────────────────────────
+# Postgres is Neon now — see TF in
+# mcp-approval2/terraform/environments/privat/neon-knowledge2.tf.
+# `terraform apply` provisions the project, roles (knowledge_app + knowledge_admin,
+# both in neon_superuser → BYPASSRLS, no extra GRANTs), and pushes
+# DATABASE_URL / DATABASE_ADMIN_URL / DB_APP_PASSWORD / DB_ADMIN_PASSWORD
+# into Doppler. One-time bootstrap after first apply:
+#   psql "$DATABASE_ADMIN_URL" -c 'CREATE EXTENSION vector; CREATE EXTENSION pg_trgm;'
+step "Postgres: TF-managed at Neon — verify DATABASE_URL is staged in Doppler"
+if doppler secrets get DATABASE_URL --plain --project "$DOPPLER_PROJECT" --config "$DOPPLER_CONFIG" >/dev/null 2>&1; then
+  warn "DATABASE_URL present in Doppler ($DOPPLER_PROJECT/$DOPPLER_CONFIG)"
 else
-  fly postgres create \
-    --name "$PG_NAME" \
-    --region "$REGION" \
-    --vm-size shared-cpu-1x \
-    --volume-size 3 \
-    --initial-cluster-size 1
+  die "DATABASE_URL not staged in Doppler — run \`terraform apply\` for neon-knowledge2.tf first"
 fi
-
-step "Postgres: attach to '$APP_NAME' (sets DATABASE_URL secret on the app)"
-if fly secrets list -a "$APP_NAME" 2>/dev/null | grep -q '^DATABASE_URL'; then
-  warn "DATABASE_URL already attached — skipping"
-else
-  fly postgres attach "$PG_NAME" --app "$APP_NAME"
-fi
-
-step "Postgres: enable pgvector + pg_trgm (idempotent)"
-cat <<'SQL' | fly postgres connect -a "$PG_NAME"
-CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-SQL
-
-step "Postgres: create knowledge_admin role (BYPASSRLS) for /v1/internal/erase-user"
-warn "Manual step — run this SQL inside the next \`fly postgres connect\` shell:"
-cat <<'SQL'
-  -- The DATABASE_ADMIN_URL secret in Doppler must use this password.
-  -- Generate via: openssl rand -hex 24
-  CREATE ROLE knowledge_admin LOGIN PASSWORD '<paste-from-doppler-DATABASE_ADMIN_URL>' BYPASSRLS;
-  GRANT ALL ON DATABASE knowledge TO knowledge_admin;
-  GRANT ALL ON ALL TABLES    IN SCHEMA public TO knowledge_admin;
-  GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO knowledge_admin;
-SQL
-read -rp "Press <enter> once knowledge_admin exists, or Ctrl-C to abort: " _
 
 # ─── 3. Sync secrets from Doppler ─────────────────────────────────────
 step "Sync secrets from Doppler (project=$DOPPLER_PROJECT, config=$DOPPLER_CONFIG)"

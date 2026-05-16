@@ -1,9 +1,18 @@
 # Deploy `mcp-knowledge2` to Google Cloud (Cloud Run + Cloud SQL)
 
 EU-region (europe-west4) deploy with Cloud SQL Postgres 16 + pgvector,
-GCS via S3-Interop for blob storage, and Vertex AI for embeddings (via
-the runtime SA's ADC). Secrets are sourced from Doppler and mirrored to
-Google Secret Manager — Cloud Run reads them via `secretKeyRef`.
+GCS via S3-Interop for blob storage (HMAC keys; a native-GCS adapter
+exists in code but isn't wired into `service.yaml` yet — see open items
+in [PILOT-READINESS](../../docs/PILOT-READINESS.md)), and Vertex AI for
+embeddings (via the runtime SA's ADC). Secrets are sourced from Doppler
+and mirrored to Google Secret Manager — Cloud Run reads them via
+`secretKeyRef`.
+
+> ⚠️ **Vector-dim mismatch warning:** the schema (migration `0010`)
+> ships at 1024-dim for Cloudflare `bge-m3`. Vertex
+> `text-multilingual-embedding-002` returns 768-dim. Either flip
+> `EMBED_PROVIDER=cloudflare` (and add the four CF secrets below) or
+> roll the schema back to 768-dim before going live with Vertex.
 
 ## TL;DR
 

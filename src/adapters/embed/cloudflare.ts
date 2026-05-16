@@ -22,12 +22,22 @@
 import { loadEnv } from '../../types/env.ts';
 import { maskPII } from '../../lib/pii/mask.ts';
 import { logger } from '../../lib/logger.ts';
+import { retryWithBackoff } from '../../lib/retry.ts';
 import type { EmbeddingAdapter, EmbeddingTaskType } from './interface.ts';
 
 interface CloudflareWorkersAiResponse {
   result?: { data?: number[][] };
   success?: boolean;
   errors?: { code: number; message: string }[];
+}
+
+class CloudflareEmbedError extends Error {
+  readonly status: number;
+  constructor(status: number, msg: string) {
+    super(msg);
+    this.name = 'CloudflareEmbedError';
+    this.status = status;
+  }
 }
 
 export class CloudflareEmbeddingAdapter implements EmbeddingAdapter {
@@ -67,25 +77,53 @@ export class CloudflareEmbeddingAdapter implements EmbeddingAdapter {
     if (env.CLOUDFLARE_AI_GATEWAY_ID && env.CLOUDFLARE_AI_GATEWAY_TOKEN) {
       headers['cf-aig-authorization'] = `Bearer ${env.CLOUDFLARE_AI_GATEWAY_TOKEN}`;
     }
-    const r = await fetch(this.endpoint(), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ text: masked }),
-    });
-    if (!r.ok) {
-      const body = await r.text().catch(() => '<unreadable>');
-      logger.error({ status: r.status, body, model: this.model }, 'cloudflare embed failed');
-      throw new Error(`cloudflare embed failed: ${r.status}`);
-    }
-    const j = (await r.json()) as CloudflareWorkersAiResponse;
-    if (!j.success || !j.result?.data) {
-      logger.error({ errors: j.errors, model: this.model }, 'cloudflare embed returned non-success');
-      throw new Error('cloudflare embed returned non-success response');
-    }
-    const data = j.result.data;
-    if (data.length !== masked.length) {
-      throw new Error(`cloudflare embed returned ${data.length} vectors for ${masked.length} inputs`);
-    }
-    return data;
+    // Retry only on 5xx / 429 / network errors. 4xx (bad auth, bad input)
+    // is deterministic — retrying would double the cost without changing
+    // the result. Total budget 25 s leaves headroom for the caller within
+    // a typical 30 s request timeout.
+    return retryWithBackoff(
+      async () => {
+        const r = await fetch(this.endpoint(), {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ text: masked }),
+        });
+        if (!r.ok) {
+          const body = await r.text().catch(() => '<unreadable>');
+          logger.error(
+            { status: r.status, body, model: this.model },
+            'cloudflare embed failed',
+          );
+          throw new CloudflareEmbedError(r.status, `cloudflare embed failed: ${r.status}`);
+        }
+        const j = (await r.json()) as CloudflareWorkersAiResponse;
+        if (!j.success || !j.result?.data) {
+          logger.error(
+            { errors: j.errors, model: this.model },
+            'cloudflare embed returned non-success',
+          );
+          // 200 with success=false → not retryable (deterministic API bug)
+          throw new Error('cloudflare embed returned non-success response');
+        }
+        const data = j.result.data;
+        if (data.length !== masked.length) {
+          throw new Error(
+            `cloudflare embed returned ${data.length} vectors for ${masked.length} inputs`,
+          );
+        }
+        return data;
+      },
+      {
+        maxAttempts: 3,
+        baseDelayMs: 250,
+        maxDelayMs: 4_000,
+        totalBudgetMs: 25_000,
+        onRetry: (attempt, err, delayMs) =>
+          logger.warn(
+            { attempt, delayMs, err: (err as Error).message, model: this.model },
+            'cloudflare embed retrying',
+          ),
+      },
+    );
   }
 }

@@ -10,7 +10,7 @@
 | Deploy a new release | `fly deploy --config fly.toml --remote-only` |
 | Tail logs | `fly logs -a mcp-knowledge2` |
 | Open VM shell | `fly ssh console -a mcp-knowledge2` |
-| Postgres shell | `fly postgres connect -a mcp-knowledge2-pg` |
+| Postgres shell | `psql "$(doppler secrets get DATABASE_ADMIN_URL --plain --project mcp-knowledge2 --config fly)"` (Neon-managed seit 2026-05-17) |
 | List releases | `fly releases list -a mcp-knowledge2` |
 | Rollback to prev | `fly releases rollback <version> -a mcp-knowledge2` |
 | Set/rotate secret | `fly secrets set --app mcp-knowledge2 KEY=value` |
@@ -22,8 +22,21 @@
 
 ## Initial deploy
 
-See [`deploy/fly/README.md`](../../deploy/fly/README.md) and run
-`bash deploy/fly/deploy.sh`.
+1. Im Schwester-Repo `mcp-approval2/terraform/environments/privat/`
+   `terraform apply` für `neon-knowledge2.tf` — legt Neon-Project, Rollen,
+   Branch und Outputs an, pusht `DATABASE_URL`, `DATABASE_ADMIN_URL`,
+   `DB_APP_PASSWORD`, `DB_ADMIN_PASSWORD` in Doppler.
+2. Verify `DATABASE_URL` ist im Doppler-Config `mcp-knowledge2 / fly` gestaged:
+   ```bash
+   doppler secrets get DATABASE_URL --plain --project mcp-knowledge2 --config fly | head -c 40
+   ```
+3. Einmaliger Neon-Bootstrap:
+   ```bash
+   psql "$(doppler secrets get DATABASE_ADMIN_URL --plain --project mcp-knowledge2 --config fly)" \
+     -c 'CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;'
+   ```
+4. See [`deploy/fly/README.md`](../../deploy/fly/README.md) and run
+   `bash deploy/fly/deploy.sh`.
 
 ## Re-deploy after a code change
 
@@ -59,10 +72,11 @@ fly scale count 2 --region fra,ams -a mcp-knowledge2  # multi-region
 ```
 
 The Hono app is stateless except for the JWKS cache and pg pool — safe
-to run N replicas. The pg pool sizing (`DATABASE_POOL_MAX=10`) means
-each replica holds up to 10 connections; tune both values together so
-N × DATABASE_POOL_MAX ≤ Postgres `max_connections` (default 300 on
-Fly's shared-cpu-1x pg cluster).
+to run N replicas. Die DB sitzt seit 2026-05-17 auf Neon (Free Tier,
+PGBouncer-Pooler `ep-…-pooler.c-3.eu-central-1.aws.neon.tech`). Pool-Sizing
+`DATABASE_POOL_MAX=10` heisst N × 10 Verbindungen; Neon Free hat
+`max_connections=100` (Pooler-Pool). Bei mehreren Replicas entweder
+`DATABASE_POOL_MAX` runtersetzen oder auf Neon Launch upgraden.
 
 ### Vertical (bigger VM)
 
@@ -76,18 +90,10 @@ Memory-heavy operations: embedding requests buffer the response body
 
 ### Scaling Postgres
 
-```bash
-fly postgres list
-fly postgres update --vm-size shared-cpu-2x --memory 1024 -a mcp-knowledge2-pg
-# Add a replica (HA):
-fly machines clone <leader-machine-id> -a mcp-knowledge2-pg --region fra
-```
-
-Volume size can only grow:
-
-```bash
-fly volumes extend <volume-id> -s 10   # grow to 10 GB
-```
+Postgres ist seit 2026-05-17 Neon-managed. Skalierung erfolgt in der Neon Console
+bzw. via Terraform (`mcp-approval2/terraform/environments/privat/neon-knowledge2.tf`).
+Free Tier: 0,5 GB Storage + 0,25 CU shared. Bei Bedarf Upgrade auf Neon Launch
+(7d Retention, ~$5/mo) oder höher.
 
 ## Secrets rotation
 
@@ -96,11 +102,11 @@ fly volumes extend <volume-id> -s 10   # grow to 10 GB
 | `SERVICE_TOKEN` | Anyone outside the trust boundary saw it | `fly secrets set SERVICE_TOKEN=$(openssl rand -hex 32) -a mcp-knowledge2` + update any caller |
 | `MCP_APPROVAL_INTERNAL_TOKEN` | Same as above | Rotate on both `mcp-approval2` and `mcp-knowledge2` atomically (deploy approval first, then knowledge2 — brief window of stale token rejected with 401 from approval) |
 | `BACKUP_MASTER_KEY` | **NEVER** unless you accept that all old backups become un-decryptable | If you must: keep the old key in a separate vault, write a migration script that decrypts with old + re-encrypts with new |
-| `DATABASE_URL` / `DATABASE_ADMIN_URL` | Postgres password rotation | `ALTER ROLE knowledge_app PASSWORD '<new>'` in pg, then `fly secrets set DATABASE_URL=… -a mcp-knowledge2` |
-| `VERTEX_SERVICE_ACCOUNT_JSON` | Quarterly, or on suspicion (only when `EMBED_PROVIDER=vertex`) | New SA key in GCP, then `doppler secrets set VERTEX_SERVICE_ACCOUNT_JSON="$(cat new.json \| tr -d '\n')" --project mcp-knowledge2 --config privat --silent` + `bash deploy/fly/sync-secrets.sh` |
-| `CLOUDFLARE_API_TOKEN` | Quarterly, or on suspicion (default embedding path) | New token in CF Dashboard mit `Workers AI Read` + `AI Gateway Run` scopes, dann `doppler secrets set CLOUDFLARE_API_TOKEN=… --project mcp-knowledge2 --config privat --silent` + sync |
+| `DATABASE_URL` / `DATABASE_ADMIN_URL` | Postgres password rotation | Neon Console → Project `mcp-knowledge2` → Roles → `knowledge_app` / `knowledge_admin` → Reset Password. Anschliessend `terraform apply` in `mcp-approval2/terraform/environments/privat/` (pusht neue URL in Doppler) + `bash deploy/fly/sync-secrets.sh && fly deploy -a mcp-knowledge2` |
+| `VERTEX_SERVICE_ACCOUNT_JSON` | Quarterly, or on suspicion (only when `EMBED_PROVIDER=vertex`) | New SA key in GCP, then `doppler secrets set VERTEX_SERVICE_ACCOUNT_JSON="$(cat new.json \| tr -d '\n')" --project mcp-knowledge2 --config fly --silent` + `bash deploy/fly/sync-secrets.sh` |
+| `CLOUDFLARE_API_TOKEN` | Quarterly, or on suspicion (default embedding path) | New token in CF Dashboard mit `Workers AI Read` + `AI Gateway Run` scopes, dann `doppler secrets set CLOUDFLARE_API_TOKEN=… --project mcp-knowledge2 --config fly --silent` + sync |
 | `CLOUDFLARE_AI_GATEWAY_TOKEN` | Nur wenn AI Gateway im Authenticated-Mode läuft | `Regenerate token` im CF Dashboard → AI Gateway → Settings; dann Doppler-Update wie oben + sync |
-| `ALLOWED_EMAILS` | On personnel change | `doppler secrets set ALLOWED_EMAILS=email1,email2 --project mcp-knowledge2 --config privat --silent` + sync |
+| `ALLOWED_EMAILS` | On personnel change | `doppler secrets set ALLOWED_EMAILS=email1,email2 --project mcp-knowledge2 --config fly --silent` + sync |
 
 Secrets-rotation triggers an app restart automatically.
 
@@ -112,17 +118,18 @@ The app runs a daily `pg_dump --format=custom` at 03:00 UTC, encrypts
 it with `BACKUP_MASTER_KEY`, and uploads to `s3://${BACKUP_BUCKET}/backup/<ts>.dump.enc`.
 Retention: `BACKUP_RETENTION_DAYS` (default 30).
 
-### Fly's snapshot layer (additional, free)
+### Neon's PITR / Branching layer (additional)
 
-Fly Postgres takes automatic volume snapshots — list and restore via:
+Neon Free Tier hält `history_retention_seconds` bis 6 h (Hard-Limit, kein
+Override). Restore via Branching:
 
-```bash
-fly volumes list -a mcp-knowledge2-pg
-fly volumes snapshots list <volume-id>
-# Restore happens by creating a new volume from a snapshot, then promoting
-# the new machine. See Fly docs:
-# https://fly.io/docs/postgres/managing/restore/
+```text
+Neon Console → Project mcp-knowledge2 → Branches → Create branch from history
+→ Wähle Zeitpunkt → Branch hat eigene Connection-String → in Doppler einspielen
+→ fly deploy
 ```
+
+Bei echtem Customer-Volumen lohnt sich Neon Launch (~$5/mo, 7d Retention).
 
 ### Manual disaster restore (app-level backup)
 
@@ -147,7 +154,7 @@ fly volumes snapshots list <volume-id>
   the Fly dashboard's metrics tab.
 - Audit log → `audit_events` table in Postgres. Tail with:
   ```bash
-  fly postgres connect -a mcp-knowledge2-pg
+  psql "$(doppler secrets get DATABASE_ADMIN_URL --plain --project mcp-knowledge2 --config fly)"
   -- inside psql:
   SELECT created_at, actor_user_id, action, object_id, ok
   FROM audit_events
@@ -162,17 +169,17 @@ fly volumes snapshots list <volume-id>
 |---|---|---|
 | `fly deploy` aborts in release_command | Migration broken | `fly logs -a mcp-knowledge2` filter on `release` — fix migration SQL, retry |
 | Health check failing | Either app crash or pg down | `fly machines list` → check status; `fly logs` for errors |
-| `/health/ready` 503 with `db=down` | Postgres connection broken | `fly postgres connect` — if itself fails, `fly machines restart -a mcp-knowledge2-pg` |
+| `/health/ready` 503 with `db=down` | Postgres connection broken | Neon Console → Project `mcp-knowledge2` → Operations / Status. Free Tier auto-suspended nach Idle? Cold-Start ~300ms — Folgerequest sollte passen. Wenn dauerhaft down: Connection-String + Pooler-Endpoint in Doppler `DATABASE_URL` verifizieren |
 | `/health/ready` 503 with `jwks=down` | mcp-approval2 unreachable | Check mcp-approval2 status; verify `JWKS_URL` in `fly secrets list` |
 | 401 from `/v1/*` | JWT signature mismatch (key rotation lag) | Wait for JWKS cache TTL (24h) or force restart: `fly machines restart -a mcp-knowledge2` |
 | 401 from `/v1/internal/*` | `SERVICE_TOKEN` mismatch | Verify on the caller side, re-set with `fly secrets set` |
-| Slow searches | Vector index missing or stale | `fly postgres connect`; check `\d objects` for `ivfflat` / `hnsw` index; `REINDEX` |
+| Slow searches | Vector index missing or stale | `psql "$DATABASE_ADMIN_URL"` (Neon); check `\d objects` for `ivfflat` / `hnsw` index; `REINDEX` |
 | OOM kills | Memory leak or oversized payload | Check `/metrics` for `process_resident_memory_bytes`; consider `fly scale vm --memory 1024` |
 
 ## Disable / pause the service
 
 ```bash
-# Stop all machines (cost: ~$0 for the app, pg keeps running)
+# Stop all machines (cost: ~$0 for the app; Neon auto-suspends idle compute)
 fly machines stop --select all -a mcp-knowledge2
 
 # Re-enable
@@ -187,7 +194,9 @@ fly machines start --select all -a mcp-knowledge2
 
 ```bash
 fly apps destroy mcp-knowledge2
-fly apps destroy mcp-knowledge2-pg
+# Neon-Project entfernen via Terraform (im Schwester-Repo):
+#   cd /workspaces/mcp-approval2/terraform/environments/privat
+#   terraform destroy -target=neon_project.knowledge2
 ```
 
 ## See also
