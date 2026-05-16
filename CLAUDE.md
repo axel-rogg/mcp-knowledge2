@@ -47,8 +47,8 @@
 - Auth: Multi-Issuer-Verifier — Google OIDC + Self-Facade + OBO via approval2
 - Eigene DCR-OAuth-2.1-Facade unter `src/auth/oauth_facade/` (Discovery, DCR, JWKS, /authorize+Google-redirect, /token+PKCE+refresh-rotation)
 - Eigene `users` + `invites` + `signing_keys` + `oauth_clients` Tabellen (Migrations 0005-0008)
-- KMS: eigenes Adapter-Interface — `hkdf_local` Default, `openbao` für Pilot
-- MCP-Transport unter `POST /mcp` (Streamable-HTTP) — 16 Tool-Wrapper für die `/v1/*` REST-Surface
+- KMS: eigenes Adapter-Interface — **`cloud_kms` Default seit 2026-05-17** (Google Cloud KMS multi-region `eu`, siehe [mcp-approval2/docs/adr/0011-cloud-kms-kek-provider.md](https://github.com/axel-rogg/mcp-approval2/blob/main/docs/adr/0011-cloud-kms-kek-provider.md)). `openbao` ist alternative Selfhosting-Variante (verlangt Offline-Unseal-Key-Storage), `hkdf_local` ist Dev/Test-Fallback.
+- MCP-Transport unter `POST /mcp` (Streamable-HTTP) — 17 Tool-Wrapper für die `/v1/*` REST-Surface (9 objects.* / 4 shares.* / 1 search / 3 uploads.*)
 - Audit-Log mit `via_proxy` + `approval_id` Spalten (Cross-Service-Trail)
 - Cross-Service-Contract-Tests fixieren das Wire-Format zwischen approval2 ↔ KC2
 
@@ -69,6 +69,12 @@ Status-Banner oben in jedem PLAN-File.
 | **[PLAN-as3-autonomous.md](docs/plans/active/PLAN-as3-autonomous.md)** | ✅ **CODE-COMPLETE 2026-05-15** | **AS-3-Migration: KC2 wird autonomer MCP-Server**. K1-K13 + T3 auf `feat/as3-cutover`. |
 | **[PLAN-as3-bigbang.md](docs/plans/active/PLAN-as3-bigbang.md)** | ✅ **TIER 0-3 CODE-COMPLETE** | Cross-Repo-Cutover-Plan. Tier 4 (Cutover-Window) pending. |
 | **[runbook-as3-cutover.md](docs/runbooks/runbook-as3-cutover.md)** | ✅ **Operator-Anleitung** | Step-by-Step T-7 bis T+7d für den Cutover-Tag. 452 Zeilen. |
+| **[STRATEGIE-pilot.md](docs/STRATEGIE-pilot.md)** | ✅ **Aktiv 2026-05-16** | **Pilot-Linie:** Fly.io single-target. Railway dokumentiert als Fallback. CF Workers bewusst geparkt. |
+| **[STRATEGIE.md](docs/STRATEGIE.md)** | 🅿️ **Geparkt 2026-05-16** | Dual-Runtime (Node + CF Workers) — Wiederanlauf-Pfad falls Workers-Trigger eintritt. |
+| **[PLAN-dual-runtime.md](docs/plans/active/PLAN-dual-runtime.md)** | 🅿️ **Geparkt 2026-05-16** | Implementation-Plan zur geparkten STRATEGIE. 6 Phasen, ~6-8 Arbeitstage. |
+| **[PLAN-fly-terraform.md](docs/plans/active/PLAN-fly-terraform.md)** | ⚠️ **Code vorbereitet 2026-05-16, Apply pending** | Fly via Terraform-Provider hybrid. `mcp-approval2/terraform/environments/privat/knowledge2-fly.tf` + Provider in versions.tf + fly_org-Var + tfvars-Block + deploy.sh-Notiz. Verbleibend: ~15 min für `terraform plan` + `apply`. |
+| **[PLAN-hardening.md](docs/plans/active/PLAN-hardening.md)** | ⚠️ **Teilweise umgesetzt 2026-05-16** | Pre-Pilot-Hardening. Code-Side (Rate-Limit-Middleware in oauth_facade, 6 Unit-Tests) live. TF-Side (CF-Reverse-Proxy + WAF in `knowledge2-fly-cf.tf`) prep-only mit `enable_knowledge2_fly_cf=false`. Token-Rotation-Runbook neu. |
+| **[INTEGRATION.md](docs/INTEGRATION.md)** | ⚠️ **Entwurf 2026-05-16** | Wie der Service nach Deploy in den eigenen Workflow eingebunden wird (claude.ai DCR-Flow + mcp-approval2-OBO-Bridge). |
 | [CROSS-SERVICE-CONTRACT.md](docs/CROSS-SERVICE-CONTRACT.md) | ⚠️ Live (V1-Pattern, OBO-Erweiterung in AS-3-Spec dokumentiert) | Wire-Shape gegenüber mcp-approval2-Adapter |
 | [SECURITY.md](docs/SECURITY.md) | ✅ Live | Threat-Model, Crypto-Stages, Embedding-Inversion-Risk |
 | [PILOT-READINESS.md](docs/PILOT-READINESS.md) | ✅ Live | Pre-Pilot-Checkliste |
@@ -78,9 +84,9 @@ Status-Banner oben in jedem PLAN-File.
 **Welcher Branch?** Pre-Cutover ist `main` der V1-Stand und `feat/as3-cutover` der AS-3-Stand. Wenn du AS-3-Code anfasst: auf dem Branch. Wenn du nur Docs/Specs änderst: nach `main`. Nach dem Cutover-Tag verschmelzen.
 
 - **Auth-Code** (`src/auth/jwt.ts`, `src/auth/oauth_facade/`, `src/auth/on_behalf_of.ts`): Multi-Issuer-Pattern auf `feat/as3-cutover` umgesetzt. Bei Änderungen die JWT-Format anfassen: §1.1 + §2 im AS-3-Spec ist die Quelle, plus die Contract-Tests in `tests/contract/`.
-- **KMS-Code** (`src/adapters/kms/`): `internal_api.ts` ist auf `feat/as3-cutover` gelöscht, durch `hkdf_local.ts` + `openbao.ts` ersetzt. KMS-Provider wird via `KMS_PROVIDER` env gewählt.
+- **KMS-Code** (`src/adapters/kms/`): drei Adapter — `cloud_kms.ts` (Default privat-Mode seit 2026-05-17), `openbao.ts` (alternative Selfhosting-Variante), `hkdf_local.ts` (Dev/Test-Fallback). Auswahl via `KMS_PROVIDER` env. **TF-managed**: das gesamte Cloud-KMS-Setup (KeyRing, CryptoKey, Service-Account `mcp-knowledge2-fly`, IAM-Binding, JSON-Key in Doppler) lebt im Schwester-Repo unter [mcp-approval2/terraform/environments/privat/gcp-kms.tf](https://github.com/axel-rogg/mcp-approval2/blob/main/terraform/environments/privat/gcp-kms.tf) — KC2 hat keinen eigenen TF-State. Project `axelrogg-ai-tools`, Location `eu` multi-region.
 - **`users` + `invites` + `signing_keys` + `oauth_clients`** Tabellen sind auf `feat/as3-cutover` via Migrations 0005-0008 angelegt. RLS-Context kommt aus `current_user` = `users.id`.
-- **MCP-Transport** unter `POST /mcp` auf `feat/as3-cutover` aktiv. 16 Tool-Wrapper für die `/v1/*` REST-Surface (`src/mcp/register_tools.ts`).
+- **MCP-Transport** unter `POST /mcp` auf `feat/as3-cutover` aktiv. 17 Tool-Wrapper für die `/v1/*` REST-Surface (`src/mcp/register_tools.ts`).
 - **CROSS-SERVICE-CONTRACT.md** beschreibt den V1-Adapter (approval2 → KC2 mit JWT). AS-3-Erweiterungen sind im Spec dokumentiert, Contract-Tests in `tests/contract/` sind die ausführbare Wahrheit.
 - **Generic-Object-Model (ADR-0004)**: `objects.kind` Column ist **weg**. Discriminator ist `subtype: text` (free-form, zod-Regex `^[a-z][a-z0-9_:-]{0,31}$`, erlaubt `:` für caller-namespacing wie `app:composable`). `share_grants.resource_kind` und `audit_log.resource_kind` auch gedropt. AAD ist `<recordType>|<owner_id>|<object_id>` ohne subtype-Slot. Embedding-Trigger: `description != null AND request.embed === true`. `composeEmbedSource()` ist uniform. Memos sind shareable (kein Block mehr). **Cross-Repo-Sync**: mcp-approval2 Adapter + Apps-Subsystem + 3 Zod-Duplikate ko-deployed im selben Branch.
 - **subtype_prefix Filter (2026-05-15, Commit `c3f72df`)**: `GET /v1/objects?subtype_prefix=app:` macht left-anchored LIKE-Match (nutzt B-Tree-Index). Mutually-exclusive mit `subtype=` (400 BAD_REQUEST wenn beide). Hybrid-Search Body: `subtype_prefixes: string[]` (kombinierbar mit `subtypes`). MCP `objects.list`-Tool unterstützt beides. Caller (mcp-approval2) hat ko-deployten Adapter (`subtypePrefix?: string`) + Apps-Subsystem nutzt serverseitig `subtypePrefix='app:'`.
@@ -113,14 +119,27 @@ mcp-knowledge2/
 
 ## Tech-Stack
 
-- **Web:** Hono.js + @hono/node-server
+- **Web:** Hono.js + @hono/node-server (klassisches Node-22-Runtime, **kein Cloudflare-Worker-Compute**)
 - **DB:** Postgres 16 + pgvector
 - **ORM:** Drizzle (Postgres-RLS load-bearing)
 - **Auth (heute):** JWT via JWKS gegen mcp-approval2
 - **Auth (AS-3):** Multi-Issuer (Google OIDC + Self-Facade + OBO via approval2)
 - **Crypto:** AES-256-GCM, per-user-DEK aus KMS
-- **AI:** Vertex AI text-embedding-005 (EU)
+- **Embed (default):** Cloudflare Workers AI `@cf/baai/bge-m3` (1024-dim, multilingual) via AI Gateway
+- **Embed (fallback):** Vertex AI `text-multilingual-embedding-002` (768-dim, `europe-west4`) — requires schema rollback to 768-dim if switched
 - **Lang:** TypeScript strict + `noUncheckedIndexedAccess`
+
+## Compute-Target — aktive Pilot-Linie
+
+> **Aktive Strategie:** [docs/STRATEGIE-pilot.md](docs/STRATEGIE-pilot.md) — Single-Target **Fly.io Frankfurt** für den privaten Pilot, Railway als Fallback dokumentiert. CF-Workers + Cloud-Run sind geprüft + bewusst zurückgestellt. **Dual-Runtime-Refactor** ([docs/STRATEGIE.md](docs/STRATEGIE.md) + [PLAN-dual-runtime.md](docs/plans/active/PLAN-dual-runtime.md)) bleibt als wiederanlauffähiges Konzept geparkt, falls ein konkreter Workers-Trigger eintritt (Customer-Verlangen, Coop-Bypass, Edge-Latenz, Scale-to-Zero).
+
+| Target | Status |
+|---|---|
+| **Fly.io** (Frankfurt) | ✅ **aktive Pilot-Plattform**: [fly.toml](fly.toml) + [deploy/fly/](deploy/fly/) + [runbook-fly-deploy.md](docs/runbooks/runbook-fly-deploy.md). Sign-off-Stand 2026-05-16: Doppler-Config `mcp-knowledge2 / fly` (statt früher `privat`, klares Deploy-Target-Naming) live-verifiziert, Skript-Defaults aliasiert. 11 leere Required-Keys offen → siehe [PILOT-READINESS.md](docs/PILOT-READINESS.md). |
+| **Railway** (EU-Region) | 🅿️ **Fallback dokumentiert**, nicht aktiv umgesetzt. Würde dasselbe Dockerfile nutzen. Aufwand ~½ Tag wenn nötig. |
+| **Google Cloud Run** (europe-west4) | ⚠️ Scripts + Manifest da ([deploy/gcp/](deploy/gcp/), [deployments/cloud-run/service.yaml](deployments/cloud-run/service.yaml), [runbook-gcp-deploy.md](docs/runbooks/runbook-gcp-deploy.md)), aber Manifest nutzt noch S3-Interop + `hkdf_local` + `EMBED_PROVIDER=vertex` (dim-Mismatch zu 1024-dim Schema). Lohnt erst bei CMEK/VPC-SC. |
+| **Hetzner VM / K8s** | ⚠️ Skeleton: [deployments/docker-compose.yml](deployments/docker-compose.yml) + [Caddyfile](deployments/caddy/Caddyfile) + [deployments/k8s/README.md](deployments/k8s/README.md) (Stub) + [runbook-deploy-hetzner.md](docs/runbooks/runbook-deploy-hetzner.md). Compose-Pinning auf `pgvector:pg16` ist mutable Tag (F-23). |
+| **Cloudflare Workers** (Compute) | 🅿️ **Geparkt, geprüft + bewertet** (2026-05-16). Faktor 4-6 höhere Monatskosten (Neon Pro 19 €/mo + Hyperdrive vs. Fly ~5-7 €/mo) und 6-8 Tage Refactor (`@hono/node-server` → Worker-Entry, `pg` → postgres-js/neon-http, `pg-boss` → Cron-Triggers, `pg_dump`-Spawn an Plattform delegieren, R2-Adapter, App/Server-Split). Wiederanlauf-Pfad in [PLAN-dual-runtime.md](docs/plans/active/PLAN-dual-runtime.md). **D1 wird nicht unterstützt** — bleibt SQLite-Sache des Legacy-Repos [`mcp-knowledge`](https://github.com/axel-rogg/mcp-knowledge). |
 
 ## Test-Strategie
 

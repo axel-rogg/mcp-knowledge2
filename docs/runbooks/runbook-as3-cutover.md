@@ -53,29 +53,45 @@ Two separate Web-App Client-IDs in Google Cloud Console
 - [ ] Test-user-allowlist contains all pilot users (else 400 from Google)
 - [ ] Optional `GOOGLE_HD_ALLOWLIST` (CSV) ready for Workspace-pinning
 
-### 1.3 OpenBao-Setup (T-3)
+### 1.3 KMS-Setup (T-3) — Google Cloud KMS
 
-Pilot pattern: shared OpenBao container, two transit-mounts.
+> **2026-05-17 Update:** OpenBao-Path wurde durch Google Cloud KMS ersetzt
+> ([mcp-approval2 ADR-0011](https://github.com/axel-rogg/mcp-approval2/blob/main/docs/adr/0011-cloud-kms-kek-provider.md)).
+> KC2 nutzt seinen [`CloudKmsKms`-Adapter](../../src/adapters/kms/cloud_kms.ts)
+> (war schon vorhanden, jetzt Default). OpenBao bleibt im Repo als alternative
+> Selfhosting-Variante dokumentiert, ist aber nicht mehr Default-Pfad und
+> erfordert wenn aktiviert Offline-Unseal-Key-Storage.
+
+**TF-Apply (im Schwester-Repo):**
 
 ```bash
-# Inside the OpenBao container (`docker exec -it mcp-openbao sh`)
-bao login $VAULT_TOKEN
-
-# approval2's transit-mount (existing — verify)
-bao secrets list | grep "^transit/" || \
-  bao secrets enable -path=transit transit
-
-# KC2's transit-mount (new — same engine, different mount)
-bao secrets list | grep "^knowledge-dek/" || \
-  bao secrets enable -path=knowledge-dek transit
-
-# Optional: pre-create a per-tenant key (KC2's KMS-adapter will create
-# user-specific keys on demand under <mount>/keys/data-key/<users.id>).
-bao write -f knowledge-dek/keys/bootstrap
+cd /workspaces/mcp-approval2/terraform/environments/privat
+gcloud auth application-default login    # 1× pro Maschine
+bash ../../../scripts/doppler-run-terraform.sh apply
 ```
 
-- [ ] Verify with `bao read transit/keys/...` and `bao read knowledge-dek/keys/bootstrap`
-- [ ] OpenBao-AppRole for KC2 (preferred over root-token): `bao auth enable approle`, create role `knowledge2`, get role_id + secret_id → set as `OPENBAO_ROLE_ID` + `OPENBAO_SECRET_ID` (TODO: KC2 currently uses raw `OPENBAO_TOKEN` env; AppRole-issued token must be plugged into env-script before cutover or use root-token for pilot)
+Das legt für KC2 automatisch an:
+- Service-Account `mcp-knowledge2-fly@axelrogg-ai-tools.iam.gserviceaccount.com`
+- `roles/cloudkms.cryptoKeyDecrypter`-Binding auf `projects/axelrogg-ai-tools/locations/eu/keyRings/mcp-approval2-privat/cryptoKeys/user-dek-master`
+- Doppler-Secrets in `mcp-knowledge2/privat`-Config:
+  - `KMS_PROVIDER=cloud_kms`
+  - `CLOUD_KMS_KEY_NAME` (full resource path)
+  - `CLOUD_KMS_WRAPPED_MASTER_B64` (base64-ciphertext des 32-byte Master-Keys)
+  - `GOOGLE_APPLICATION_CREDENTIALS_JSON` (SA-Key)
+
+**Verifikation:**
+
+```bash
+# Im KC2-Container nach Deploy:
+fly logs -a mcp-knowledge2 | grep "unwrapping master key via Cloud KMS"
+# → "Successful KMS decrypt on first DEK-resolution call"
+```
+
+- [ ] `gcloud kms keys versions list --location=eu --keyring=mcp-approval2-privat --key=user-dek-master --project=axelrogg-ai-tools` zeigt aktive Version
+- [ ] Cloud Logging Audit-Trail: erste `Decrypt` Operation vom Service-Account sichtbar
+- [ ] Falls Fallback nötig: `KMS_PROVIDER=hkdf_local` in Doppler setzen + `MASTER_KEY_B64` befüllen → Service-Restart
+
+**OpenBao-Path (geparkt, nicht für Default-Cutover):** falls jemals Selfhost-Switch nötig, siehe [`mcp-approval2/terraform/environments/privat-openbao/README.md`](https://github.com/axel-rogg/mcp-approval2/tree/main/terraform/environments/privat-openbao) — komplettes TF-Modul plus Offline-Key-Storage-Anforderung.
 
 ### 1.4 Domain + TLS (T-3)
 
@@ -114,7 +130,7 @@ Beide TF-Files leben im **mcp-approval2-Repo** (`terraform/environments/privat/`
 | `GOOGLE_OAUTH_REDIRECT_URI` | `https://knowledge2.<domain>/auth/google/callback` | TF-default in dev |
 | `SELF_OAUTH_ISSUER` | `https://knowledge2.<domain>` | Operator |
 | `ALLOWED_EMAILS` | CSV der erlaubten Login-Emails | Operator — strict whitelist on KC2's `/auth/google/callback` |
-| `CLOUDFLARE_ACCOUNT_ID` | CF Dashboard URL | Public — kopiert von approval2/privat |
+| `CLOUDFLARE_ACCOUNT_ID` | CF Dashboard URL | Public — kopiert von approval2/fly (legacy: approval2/privat) |
 | `CLOUDFLARE_API_TOKEN` | CF API Tokens — `Workers AI Read` + `AI Gateway Run` | Operator — copy from approval2 ok wenn Permissions stimmen |
 | `CLOUDFLARE_AI_GATEWAY_ID` | Auto via `cloudflare_ai_gateway.knowledge2` TF-Resource | TF-managed |
 | `CLOUDFLARE_AI_GATEWAY_TOKEN` | Optional — nur bei Authenticated Gateway | Operator |

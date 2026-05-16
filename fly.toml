@@ -11,7 +11,7 @@
 # Postgres: attached via `fly postgres attach` (sets DATABASE_URL secret).
 # pgvector: enabled manually after `fly postgres create` — see
 #   deploy/fly/deploy.sh step 2.
-# Secrets: managed in Doppler (project=mcp-knowledge2, config=prd_fly).
+# Secrets: managed in Doppler (project=mcp-knowledge2, config=fly).
 #   Sync to Fly with `bash deploy/fly/sync-secrets.sh`.
 
 app             = "mcp-knowledge2"
@@ -61,10 +61,17 @@ kill_timeout    = "30s"
   CLOUDFLARE_AI_GATEWAY_ID = "mcp-knowledge2"
   CLOUDFLARE_AI_MODEL      = "@cf/baai/bge-m3"
 
-  # ─── KMS — hkdf_local for solo Pilot ──────────────────────────────────
-  # KMS_MASTER_KEY_B64 comes from Doppler. Switch to KMS_PROVIDER=openbao
-  # plus OPENBAO_* secrets once an OpenBao Transit Engine is provisioned.
-  KMS_PROVIDER = "hkdf_local"
+  # ─── KMS — Google Cloud KMS (privat-Mode Default seit 2026-05-17) ────
+  # Switch documented in mcp-approval2/docs/adr/0011-cloud-kms-kek-provider.md.
+  # All Cloud-KMS values are Doppler-managed by Terraform
+  # (mcp-approval2/terraform/environments/privat/gcp-kms.tf) — Project
+  # `axelrogg-ai-tools`, multi-region `eu`. Secrets pushed to Doppler:
+  #   CLOUD_KMS_KEY_NAME                — full KMS resource path
+  #   CLOUD_KMS_WRAPPED_MASTER_B64      — base64 ciphertext of the 32-byte master
+  #   GOOGLE_APPLICATION_CREDENTIALS_JSON — SA JSON key (mcp-knowledge2-fly)
+  # `hkdf_local` is the dev-/test-fallback; `openbao` is the alternative
+  # selfhosting path that requires offline unseal-key storage.
+  KMS_PROVIDER = "cloud_kms"
 
   # ─── Blob storage ─────────────────────────────────────────────────────
   # Recommended for Fly: Tigris (https://fly.storage.tigris.dev) — sits in
