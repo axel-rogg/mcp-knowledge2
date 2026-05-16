@@ -43,8 +43,58 @@ let cachedKmsClient: KeyManagementServiceClient | null = null;
 
 function kmsClient(): KeyManagementServiceClient {
   if (cachedKmsClient) return cachedKmsClient;
+  // Auth-Resolution (in Precedence-Reihenfolge):
+  //   1. GOOGLE_APPLICATION_CREDENTIALS_JSON — inline JSON in env (Fly-Pattern,
+  //      vom TF-Apply via doppler_secret eingespielt). NICHT Teil des
+  //      Standard-ADC-Chains, deswegen explizit.
+  //   2. GOOGLE_APPLICATION_CREDENTIALS — file-path (local dev, k8s-mounts)
+  //   3. Metadata-Server / gcloud auth (Cloud Run, GCE)
+  const env = loadEnv();
+  const inlineJson = env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+  if (inlineJson && inlineJson.trim().length > 0) {
+    const parsed = parseSaJson(inlineJson);
+    cachedKmsClient = new KeyManagementServiceClient({
+      credentials: parsed,
+      projectId: parsed.project_id,
+    });
+    return cachedKmsClient;
+  }
+  // Fallback: Default-ADC-Chain.
   cachedKmsClient = new KeyManagementServiceClient();
   return cachedKmsClient;
+}
+
+/**
+ * Parse Service-Account-JSON. Akzeptiert raw JSON (KC2-Convention) ODER
+ * base64-encoded JSON (TF-Default: google_service_account_key.private_key).
+ * Spiegelt das Pattern in mcp-approval2/packages/adapters/src/kek/cloud_kms.ts.
+ */
+function parseSaJson(raw: string): {
+  client_email: string;
+  private_key: string;
+  project_id: string;
+} {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof parsed.client_email === 'string') {
+      return parsed as unknown as ReturnType<typeof parseSaJson>;
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const decoded = Buffer.from(raw, 'base64').toString('utf8');
+    const parsed = JSON.parse(decoded) as Record<string, unknown>;
+    if (typeof parsed.client_email === 'string') {
+      return parsed as unknown as ReturnType<typeof parseSaJson>;
+    }
+  } catch {
+    /* fall through */
+  }
+  throw errInternal(
+    'CloudKmsKms: GOOGLE_APPLICATION_CREDENTIALS_JSON ist weder valides ' +
+      'JSON noch base64-encoded JSON mit client_email-Feld.',
+  );
 }
 
 async function unwrapMasterKey(): Promise<Uint8Array> {

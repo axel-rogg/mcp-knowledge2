@@ -141,6 +141,13 @@ const EnvSchema = z.object({
   //     to rotate.
   CLOUD_KMS_KEY_NAME: z.string().min(1).optional(),
   CLOUD_KMS_WRAPPED_MASTER_B64: z.string().min(1).optional(),
+  // Optional inline SA-JSON für Cloud-KMS-Auth — analog Pattern in
+  // mcp-approval2's CloudKmsKekProvider. Wenn gesetzt, wird direkt an
+  // KeyManagementServiceClient.credentials uebergeben. Wenn nicht
+  // gesetzt: default ADC-Chain (GOOGLE_APPLICATION_CREDENTIALS file-path
+  // oder Metadata-Server). Auf Fly via TF-Apply als doppler_secret
+  // gepushed (terraform/environments/privat/gcp-kms.tf).
+  GOOGLE_APPLICATION_CREDENTIALS_JSON: z.string().min(1).optional(),
 
   // F-21: must decode to exactly 32 raw bytes for AES-256-GCM. Hex (64 ascii)
   // and base64 (44 ascii padded) are both fine — we accept either by
