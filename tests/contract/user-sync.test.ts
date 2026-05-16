@@ -66,7 +66,7 @@ vi.mock('../../src/observability/audit.ts', async () => {
 vi.mock('../../src/storage/objects.ts', async () => ({
   hardDeleteByOwner: vi.fn(async () => ({ rowsDeleted: 0, blobsToDelete: [] })),
 }));
-vi.mock('../../src/adapters/blob/s3.ts', async () => ({
+vi.mock('../../src/adapters/blob/index.ts', async () => ({
   blobStore: () => ({
     delete: vi.fn(async () => undefined),
     exists: vi.fn(async () => true),

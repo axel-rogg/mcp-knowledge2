@@ -14,6 +14,11 @@ let cachedClient: S3Client | null = null;
 function client(): S3Client {
   if (cachedClient) return cachedClient;
   const env = loadEnv();
+  if (!env.BLOB_ENDPOINT || !env.BLOB_ACCESS_KEY || !env.BLOB_SECRET_KEY) {
+    throw new Error(
+      'BLOB_PROVIDER=s3 requires BLOB_ENDPOINT + BLOB_ACCESS_KEY + BLOB_SECRET_KEY',
+    );
+  }
   cachedClient = new S3Client({
     region: env.BLOB_REGION,
     endpoint: env.BLOB_ENDPOINT,
@@ -94,17 +99,6 @@ export class S3BlobStore implements BlobStore {
   }
 }
 
-let cachedBlobStore: BlobStore | null = null;
-export function blobStore(): BlobStore {
-  if (!cachedBlobStore) cachedBlobStore = new S3BlobStore();
-  return cachedBlobStore;
-}
-
-/**
- * Override the cached blob-store. Tests use this to inject an in-memory
- * implementation so we don't need a live S3 endpoint to roundtrip
- * objects whose ciphertext exceeds the 16 KB inline cap.
- */
-export function setBlobStoreForTest(impl: BlobStore | null): void {
-  cachedBlobStore = impl;
-}
+// Caller-facing factory + test-stub live in ./index.ts. The S3BlobStore
+// class is exported above for the factory + test-fixtures that want to
+// instantiate it directly (e.g. integration tests that bind to MinIO).

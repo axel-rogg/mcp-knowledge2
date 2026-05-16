@@ -11,7 +11,7 @@ import { uploads, type UploadRow } from '../db/schema.ts';
 import { withUserTx } from '../db/client.ts';
 import { requireContext } from '../lib/context.ts';
 import { errBadRequest, errNotFound } from '../lib/errors.ts';
-import { blobStore } from '../adapters/blob/s3.ts';
+import { blobStore } from '../adapters/blob/index.ts';
 import { uuidV4, nowMs } from '../lib/ids.ts';
 import { buildAad } from '../lib/crypto/aad.ts';
 import { encrypt, importKey } from '../lib/crypto/aes_gcm.ts';

@@ -69,15 +69,26 @@ const EnvSchema = z.object({
 
   SERVICE_TOKEN: z.string().min(32),
 
-  BLOB_ENDPOINT: z.string().url(),
-  BLOB_REGION: z.string().min(1).default('eu-central'),
-  BLOB_ACCESS_KEY: z.string().min(1),
-  BLOB_SECRET_KEY: z.string().min(1),
+  // ── Blob storage ──────────────────────────────────────────────────
+  // Default 's3' covers AWS S3, Cloudflare R2, Backblaze B2, Hetzner OS,
+  // MinIO. 'gcs' is the native Google Cloud Storage path via Workload
+  // Identity Federation (no HMAC keys) — used by the business workspace.
+  BLOB_PROVIDER: z.enum(['s3', 'gcs']).default('s3'),
   BLOB_BUCKET: z.string().min(1),
+
+  // S3-path config — only required when BLOB_PROVIDER='s3'
+  BLOB_ENDPOINT: z.string().url().optional(),
+  BLOB_REGION: z.string().min(1).default('eu-central'),
+  BLOB_ACCESS_KEY: z.string().min(1).optional(),
+  BLOB_SECRET_KEY: z.string().min(1).optional(),
   BLOB_PATH_STYLE: z
     .string()
     .default('true')
     .transform((v) => v === 'true' || v === '1'),
+
+  // GCS-path config — only required when BLOB_PROVIDER='gcs'
+  GCS_PROJECT_ID: z.string().min(1).optional(),
+  GCS_KEY_FILE: z.string().min(1).optional(), // local-dev only; Workload Identity in prod
 
   // ── Embedding provider selection ──────────────────────────────────
   // Default: 'cloudflare' (Workers AI via AI Gateway, bge-m3 multilingual,
@@ -114,13 +125,22 @@ const EnvSchema = z.object({
   CLOUDFLARE_AI_MODEL: z.string().min(1).default('@cf/baai/bge-m3'),
 
   // AS-3 K9/K13: KMS provider selection.
-  //   - 'openbao'    — prod default, Transit-Engine via OPENBAO_ADDR/TOKEN
+  //   - 'openbao'    — Hetzner pilot, Transit-Engine via OPENBAO_ADDR/TOKEN
+  //   - 'cloud_kms'  — GCP business, Cloud-KMS-wrapped master + HKDF derive
   //   - 'hkdf_local' — dev/solo fallback, derive DEK from KMS_MASTER_KEY_B64
-  KMS_PROVIDER: z.enum(['openbao', 'hkdf_local']).default('hkdf_local'),
+  KMS_PROVIDER: z.enum(['openbao', 'cloud_kms', 'hkdf_local']).default('hkdf_local'),
   OPENBAO_ADDR: z.string().url().optional(),
   OPENBAO_TOKEN: z.string().optional(),
   OPENBAO_TRANSIT_PATH: z.string().default('transit'),
   KMS_MASTER_KEY_B64: z.string().optional(),
+
+  // Cloud-KMS config — only required when KMS_PROVIDER='cloud_kms'
+  //   CLOUD_KMS_KEY_NAME: projects/<proj>/locations/<loc>/keyRings/<ring>/cryptoKeys/<key>
+  //   CLOUD_KMS_WRAPPED_MASTER_B64: base64-ciphertext from Cloud-KMS encrypt
+  //     of a fresh 32-byte master key. Re-issue + Doppler-update + restart
+  //     to rotate.
+  CLOUD_KMS_KEY_NAME: z.string().min(1).optional(),
+  CLOUD_KMS_WRAPPED_MASTER_B64: z.string().min(1).optional(),
 
   // F-21: must decode to exactly 32 raw bytes for AES-256-GCM. Hex (64 ascii)
   // and base64 (44 ascii padded) are both fine — we accept either by

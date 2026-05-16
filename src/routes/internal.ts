@@ -18,7 +18,7 @@ import {
   shareGrants,
   uploads,
 } from '../db/schema.ts';
-import { blobStore } from '../adapters/blob/s3.ts';
+import { blobStore } from '../adapters/blob/index.ts';
 import { emitAudit } from '../observability/audit.ts';
 import { errBadRequest } from '../lib/errors.ts';
 import { logger } from '../lib/logger.ts';

@@ -103,7 +103,7 @@ beforeAll(async () => {
   resetEnvCacheForTest();
 
   // ─── Adapters: inject in-memory stubs ────────────────────────────────────
-  const { setBlobStoreForTest } = await import('../../src/adapters/blob/s3.ts');
+  const { setBlobStoreForTest } = await import('../../src/adapters/blob/index.ts');
   setBlobStoreForTest(makeInMemoryBlobStore());
 
   const { setKmsForTest } = await import('../../src/adapters/kms/index.ts');

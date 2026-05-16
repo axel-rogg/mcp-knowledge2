@@ -10,6 +10,7 @@ import { loadEnv } from '../../types/env.ts';
 import { errInternal } from '../../lib/errors.ts';
 import { HkdfLocalKms } from './hkdf_local.ts';
 import { OpenBaoKms } from './openbao.ts';
+import { CloudKmsKms } from './cloud_kms.ts';
 import type { KmsProvider } from './interface.ts';
 
 let cached: KmsProvider | null = null;
@@ -20,6 +21,9 @@ export function kms(): KmsProvider {
   switch (env.KMS_PROVIDER) {
     case 'openbao':
       cached = new OpenBaoKms();
+      break;
+    case 'cloud_kms':
+      cached = new CloudKmsKms();
       break;
     case 'hkdf_local': {
       if (!env.KMS_MASTER_KEY_B64) {

@@ -10,7 +10,7 @@ import { type Db, withUserTx } from '../db/client.ts';
 import { buildAad } from '../lib/crypto/aad.ts';
 import { decrypt, encrypt, importKey } from '../lib/crypto/aes_gcm.ts';
 import { uuidV4, nowMs } from '../lib/ids.ts';
-import { blobStore } from '../adapters/blob/s3.ts';
+import { blobStore } from '../adapters/blob/index.ts';
 import { kms } from '../adapters/kms/index.ts';
 import { embeddingAdapter } from '../adapters/embed/index.ts';
 import { errBadRequest, errForbidden, errNotFound, AppError } from '../lib/errors.ts';

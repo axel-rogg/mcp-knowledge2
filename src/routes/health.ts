@@ -3,7 +3,7 @@
 import { Hono } from 'hono';
 import { sql } from 'drizzle-orm';
 import { appDbPool } from '../db/client.ts';
-import { blobStore } from '../adapters/blob/s3.ts';
+import { blobStore } from '../adapters/blob/index.ts';
 import { metricsText } from '../observability/metrics.ts';
 
 const VERSION = process.env.npm_package_version ?? '0.1.0';

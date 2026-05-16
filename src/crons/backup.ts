@@ -28,6 +28,21 @@ import { logger } from '../lib/logger.ts';
 import { nowMs } from '../lib/ids.ts';
 
 function backupClient(env: Env): { client: S3Client; bucket: string } {
+  // Backup-Pfad nutzt heute den S3-Endpoint des Blob-Adapters. Wenn der
+  // Operator BLOB_PROVIDER='gcs' fährt, ist hier noch ein separater Schritt
+  // nötig — für GCS-Backup das @google-cloud/storage SDK direkt; im Pilot
+  // nicht implementiert weil pre-pilot.
+  if (env.BLOB_PROVIDER !== 's3') {
+    throw new Error(
+      `backup cron currently only supports BLOB_PROVIDER=s3, got ${env.BLOB_PROVIDER}. ` +
+        'See TODO in crons/backup.ts: add GCS-native backup path before activating cron.',
+    );
+  }
+  if (!env.BLOB_ENDPOINT || !env.BLOB_ACCESS_KEY || !env.BLOB_SECRET_KEY) {
+    throw new Error(
+      'backup cron requires BLOB_ENDPOINT + BLOB_ACCESS_KEY + BLOB_SECRET_KEY (s3 path)',
+    );
+  }
   const client = new S3Client({
     region: env.BLOB_REGION,
     endpoint: env.BLOB_ENDPOINT,

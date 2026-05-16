@@ -3,7 +3,7 @@
 import { and, eq, inArray, lt, sql } from 'drizzle-orm';
 import { withAdminTx } from '../db/client.ts';
 import { blobDeletionQueue, uploads } from '../db/schema.ts';
-import { blobStore } from '../adapters/blob/s3.ts';
+import { blobStore } from '../adapters/blob/index.ts';
 import { nowMs } from '../lib/ids.ts';
 import { logger } from '../lib/logger.ts';
 

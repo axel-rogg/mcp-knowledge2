@@ -16,7 +16,7 @@ import { requireContext } from '../lib/context.ts';
 import { errBadRequest, errNotFound } from '../lib/errors.ts';
 import { buildAad } from '../lib/crypto/aad.ts';
 import { decrypt, importKey } from '../lib/crypto/aes_gcm.ts';
-import { blobStore } from '../adapters/blob/s3.ts';
+import { blobStore } from '../adapters/blob/index.ts';
 import { kms } from '../adapters/kms/index.ts';
 
 export interface RevisionMeta {
