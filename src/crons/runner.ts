@@ -26,6 +26,19 @@ export async function startCrons(): Promise<PgBoss> {
   await bossInstance.start();
   logger.info('pg-boss started');
 
+  // pg-boss v10+ entfernt implicit-queue-creation aus work()/schedule().
+  // createQueue ist idempotent (no-op wenn schon existiert).
+  const queues = [
+    'uploads.sweep_expired',
+    'uploads.purge_expired',
+    'idempotency.gc',
+    'backup.daily',
+    'blobs.cleanup_orphans',
+  ];
+  for (const q of queues) {
+    await bossInstance.createQueue(q);
+  }
+
   await bossInstance.work('uploads.sweep_expired', sweepExpiredUploads);
   await bossInstance.work('uploads.purge_expired', purgeExpiredUploads);
   await bossInstance.work('idempotency.gc', gcIdempotency);
