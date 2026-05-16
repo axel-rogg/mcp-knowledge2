@@ -97,7 +97,10 @@ fly volumes extend <volume-id> -s 10   # grow to 10 GB
 | `MCP_APPROVAL_INTERNAL_TOKEN` | Same as above | Rotate on both `mcp-approval2` and `mcp-knowledge2` atomically (deploy approval first, then knowledge2 — brief window of stale token rejected with 401 from approval) |
 | `BACKUP_MASTER_KEY` | **NEVER** unless you accept that all old backups become un-decryptable | If you must: keep the old key in a separate vault, write a migration script that decrypts with old + re-encrypts with new |
 | `DATABASE_URL` / `DATABASE_ADMIN_URL` | Postgres password rotation | `ALTER ROLE knowledge_app PASSWORD '<new>'` in pg, then `fly secrets set DATABASE_URL=… -a mcp-knowledge2` |
-| `VERTEX_SERVICE_ACCOUNT_JSON` | Quarterly, or on suspicion | New SA key in GCP, then `fly secrets set VERTEX_SERVICE_ACCOUNT_JSON="$(cat new.json \| tr -d '\n')"` |
+| `VERTEX_SERVICE_ACCOUNT_JSON` | Quarterly, or on suspicion (only when `EMBED_PROVIDER=vertex`) | New SA key in GCP, then `doppler secrets set VERTEX_SERVICE_ACCOUNT_JSON="$(cat new.json \| tr -d '\n')" --project mcp-knowledge2 --config privat --silent` + `bash deploy/fly/sync-secrets.sh` |
+| `CLOUDFLARE_API_TOKEN` | Quarterly, or on suspicion (default embedding path) | New token in CF Dashboard mit `Workers AI Read` + `AI Gateway Run` scopes, dann `doppler secrets set CLOUDFLARE_API_TOKEN=… --project mcp-knowledge2 --config privat --silent` + sync |
+| `CLOUDFLARE_AI_GATEWAY_TOKEN` | Nur wenn AI Gateway im Authenticated-Mode läuft | `Regenerate token` im CF Dashboard → AI Gateway → Settings; dann Doppler-Update wie oben + sync |
+| `ALLOWED_EMAILS` | On personnel change | `doppler secrets set ALLOWED_EMAILS=email1,email2 --project mcp-knowledge2 --config privat --silent` + sync |
 
 Secrets-rotation triggers an app restart automatically.
 

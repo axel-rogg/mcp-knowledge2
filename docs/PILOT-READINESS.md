@@ -39,10 +39,18 @@ the production AppRole boot path against a real `mcp-approval2`.**
   preventing cross-user / cross-object ciphertext replay. Per-user DEKs
   resolved on-demand via `mcp-approval2` KMS internal API; never
   persisted in `mcp-knowledge2`.
-- **PII masking** — applied to text **before** it leaves for Vertex AI
-  embedding, so the embedding provider never sees raw emails / phones.
-  (Embedding-inversion threat documented in
-  [`SECURITY.md`](./SECURITY.md).)
+- **PII masking** — applied to text **before** it leaves the service for
+  embedding. **Default provider since 2026-05-15: Cloudflare Workers AI
+  (`@cf/baai/bge-m3`, 1024-dim, multilingual)** routed through a dedicated
+  AI Gateway `mcp-knowledge2` (TF-managed via
+  `mcp-approval2/terraform/environments/privat/knowledge2-cloudflare.tf`).
+  Optional fallback via `EMBED_PROVIDER=vertex`. Either way, the embedding
+  provider never sees raw emails / phones. (Embedding-inversion threat
+  documented in [`SECURITY.md`](./SECURITY.md).)
+- **Email-Whitelist** — `ALLOWED_EMAILS` CSV in Doppler is strictly
+  enforced on `/auth/google/callback`. Empty = open. Non-empty = only
+  listed emails complete OAuth. Defense-in-depth on top of the OAuth-App's
+  Test-Users list in Google Cloud Console.
 - **Object CRUD** — `/v1/objects` generic-object model (free-form
   `subtype` string, no DB-enforced discriminator — see ADR-0004),
   inline body ≤ 16 KB in Postgres or external blob via presigned upload
@@ -105,9 +113,10 @@ the production AppRole boot path against a real `mcp-approval2`.**
 
 - **Backup-restore script** — `scripts/restore-backup.ts` is referenced
   in the runbook but doesn't exist yet. Manual decrypt steps documented.
-- **Vertex AI retry/backoff** — currently single-shot; under quota
-  pressure the embed call will 5xx. Add `p-retry` w/ jitter once the
-  pilot tells us their throughput.
+- **Embedding-provider retry/backoff** — currently single-shot for both
+  Cloudflare Workers AI (default) and Vertex AI (fallback). Under quota
+  pressure the embed call will 5xx. Add `p-retry` w/ jitter in
+  `src/adapters/embed/index.ts` once the pilot tells us their throughput.
 - **Observability — tracing** — pino structured logs only. OpenTelemetry
   hooks are referenced in `.env.example` (`OTEL_EXPORTER_OTLP_ENDPOINT`)
   but not wired in.
@@ -193,8 +202,10 @@ When all 5 pass, we are **pilot-ready**.
 - **Latency**: p50 < 80 ms for read/list, p95 < 250 ms (Frankfurt → EU);
   search p50 < 200 ms, p95 < 600 ms (vector + FTS round-trip).
 - **Throughput**: untested. The pilot itself is the throughput test.
-- **Data residency**: all data in EU (Frankfurt). Vertex AI requests go
-  to `europe-west4` for embeddings.
+- **Data residency**: all data in EU (Frankfurt). Embedding-Requests:
+  default Cloudflare Workers AI via AI Gateway in CF-EU-Edges (kein GCP-
+  Egress); optional Vertex AI `europe-west4` als Fallback wenn
+  `EMBED_PROVIDER=vertex`.
 - **Encryption**: AES-256-GCM at rest (per-user DEK) + TLS in transit.
   Backups separately encrypted with `BACKUP_MASTER_KEY`. We never see
   plaintext keys at rest in `mcp-knowledge2`.

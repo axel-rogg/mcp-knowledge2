@@ -72,7 +72,7 @@ documented intent — not a regression to file as a bug.
 
 ## Embedding-inversion attack — residual risk
 
-Research demonstrates that dense 768-dim+ embeddings can be partially
+Research demonstrates that dense 1024-dim+ embeddings can be partially
 inverted back to original text fragments
 (Morris et al. 2023 "Text Embeddings Reveal Almost As Much As Text";
 Song & Raghunathan, IEEE S&P 2020).
@@ -84,7 +84,9 @@ therefore equivalent to a partial leak of the underlying object text.
 Mitigations applied:
 - **PII masking before generating embeddings** (`maskPII` in
   `src/lib/pii/mask.ts`) — emails, IBANs, IPs, UUIDs, phone numbers, URLs
-  are deterministically replaced by sentinels.
+  are deterministically replaced by sentinels. **Applied uniformly across
+  both embedding providers** (Cloudflare Workers AI bge-m3 default, Vertex
+  AI text-multilingual-embedding-002 fallback).
 - **RLS on `object_vectors`** — same visibility as parent `objects` row
 - **Strict no-logging of search queries** — the application never logs
   user-typed queries, only counters
@@ -95,6 +97,42 @@ Mitigations **not** applied (out-of-scope):
 
 This residual risk is communicated to clients via the DPA template
 maintained in mcp-approval2.
+
+### Provider-Wahl (Embedding-Inversion-Risiko-Mitigation)
+
+`EMBED_PROVIDER=cloudflare` (Default, 2026-05-15): Inference auf Cloudflare
+Workers AI in EU-Edges. Daten verlassen das Cloudflare-Netzwerk nicht.
+Embedding-Calls werden via Cloudflare AI Gateway `mcp-knowledge2` geroutet
+(`collect_logs=true` für Audit). Risiko: bge-m3 ist Open-Source — Inversion-
+Attacks könnten reproduzierbarer sein als bei closed-source Vertex.
+
+`EMBED_PROVIDER=vertex` (Legacy-Fallback): text-multilingual-embedding-002
+über Google Vertex AI EU. Daten verlassen die CF-Ebene Richtung GCP-EU.
+Vertex-Model ist proprietary — weniger erforschte Inversion-Attacks.
+
+Single-Tenant-Architektur: kein Multi-Tenant-Cross-Embedding-Risiko. Trotzdem
+gilt: `embedding`-Column-Read = partial text leak; nur Owner + shared-with-User
+(per RLS) kommen ran.
+
+## Authentication — strict email allowlist
+
+`ALLOWED_EMAILS` (CSV in Doppler) ist eine **strict whitelist** auf KC2's
+`/auth/google/callback` — defense-in-depth zur OAuth-App's Test-Users-Liste
+in der Google Cloud Console.
+
+- Empty → open (jeder von Google verifizierte Login passes)
+- Non-empty → nur gelistete Emails dürfen die OAuth-Callback abschließen
+- Lower-case match nach `trim()`, case-insensitive
+- Mismatch → HTTP 403 `email not in allowed users list`, Logging mit Email-Claim
+
+**Warum doppelter Schutz?** Google's Test-Users-Liste ist eine OAuth-App-
+Setting in der Cloud Console und kann (vergessenwerden zu) entfernt werden
+beim Wechsel "Testing" → "In Production". `ALLOWED_EMAILS` ist app-seitig
+enforced, robust gegen diese Drift.
+
+Erstes Login eines `ALLOWED_EMAILS`-Emails wird automatisch `role='admin'`
+(Bootstrap-Pattern in `src/users/api.ts`). Spätere Logins: `role='member'`,
+admin kann via `setUserRole` promoten.
 
 ## Logging discipline
 
