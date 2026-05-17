@@ -14,8 +14,6 @@
 //
 // Cron-Kontext (kein Request): SELF_OAUTH_ISSUER ist canonical fallback.
 
-import type { Env } from '../types/env.ts';
-
 export interface OriginEnvSlice {
   readonly ALLOWED_ORIGINS: ReadonlyArray<string>;
   readonly SELF_OAUTH_ISSUER: string;
