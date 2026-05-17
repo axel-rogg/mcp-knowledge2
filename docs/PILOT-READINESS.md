@@ -1,12 +1,14 @@
 # mcp-knowledge2 — Pilot Readiness
 
-> **Date**: 2026-05-16 (Doppler-Gap-Analyse + Audit-Verifikation)
+> **Date**: 2026-05-17 (Pilot-Deploy-Day — end-to-end LIVE)
 > **Owner**: Axel
 > **Target**: Solo-Pilot auf **Fly.io Frankfurt** (axelrogg@gmail.com), CF-Workers-Pfad bewusst geparkt — siehe [STRATEGIE-pilot.md](./STRATEGIE-pilot.md).
 > **Sister service**: `mcp-approval2` (Approval-Proxy, optional via OBO-Bridge).
 
 This document is the honest accounting of what's done, what's known
 broken, and what's still required before we put data on this service.
+
+**Update 2026-05-17 Pilot-Deploy-Day:** Pilot ist **end-to-end LIVE**. `https://mcp-knowledge2.fly.dev/health/ready` → `{"status":"ready","checks":{"db":"ok","blob":"ok"}}`. Schwester `https://mcp2.ai-toolhub.org/health` ✅. 3 Deploy-Bugs gefixt heute (pg-boss v10 createQueue, `/health/ready`-Differenzierung, R2 EU-jurisdiction-Endpoint `.eu.r2.cloudflarestorage.com`). Postgres Neon Free Tier eu-central-1 mit pgvector 0.8.0 + pg_trgm 1.6, 12 Migrations auto-applied via `release_command`. KEK = Google Cloud KMS `europe-west3` (single-region wegen google-Provider-6.x-Bug bei `eu` multi-region). 4 offene Punkte für 2026-05-18 in der Sign-off-Checklist unten.
 
 **Update 2026-05-16:** Komplettes Doku-vs-Code-Audit durchgeführt (3 parallele Subagent-Pässe + Doppler-Live-Check). Drift-Korrekturen sind in dieselbe Commit-Reihe geflossen (README/CLAUDE.md/ADR-0001/runbook-gcp/service.yaml). Dual-Runtime-Pfad geprüft + bewusst geparkt zugunsten Fly-single-target. Verbleibender Pilot-Pfad: §"Verbleibender Aufwand" weiter unten.
 
@@ -313,15 +315,22 @@ Vor dem ersten echten Pilot-Use:
 - [x] Doku-vs-Code-Audit 2026-05-16 done, alle Drift-Stellen korrigiert
 - [x] Doppler-Stand live-verifiziert (Project `mcp-knowledge2`, Config `fly`)
 - [x] Doppler-Config `fly` etabliert (Klartext am Deploy-Target; alte `privat`-Config bleibt als Backup)
-- [ ] 5 leere Blob-Doppler-Keys gefüllt (siehe oben); DB-Keys kommen automatisch via TF
-- [ ] Blob-Provider gewählt + zwei Buckets provisioniert
-- [ ] `terraform apply` für `neon-knowledge2.tf` durchgelaufen (im Schwester-Repo `mcp-approval2`)
-- [ ] Einmaliger Neon-Bootstrap: `psql "$DATABASE_ADMIN_URL" -c 'CREATE EXTENSION vector; CREATE EXTENSION pg_trgm;'`
-- [ ] `bash deploy/fly/deploy.sh` einmal komplett durchlaufen
-- [ ] `/health` und `/health/ready` grün gegen `https://mcp-knowledge2.fly.dev`
-- [ ] OAuth-Facade Discovery + JWKS public erreichbar (`curl /.well-known/oauth-authorization-server`)
-- [ ] Smoke-Roundtrip put → get → list → search → share → delete grün — siehe Block weiter oben
+- [x] 5 leere Blob-Doppler-Keys gefüllt — R2 EU-jurisdiction-Endpoint `https://<account>.eu.r2.cloudflarestorage.com` (2026-05-17)
+- [x] Blob-Provider gewählt + zwei Buckets provisioniert — R2 EU `mcp-knowledge2-blob-eu` + `mcp-knowledge2-backup-eu`
+- [x] `terraform apply` für `neon-knowledge2.tf` durchgelaufen (im Schwester-Repo `mcp-approval2`)
+- [x] Einmaliger Neon-Bootstrap: pgvector 0.8.0 + pg_trgm 1.6 installiert (2026-05-17)
+- [x] `bash deploy/fly/deploy.sh` einmal komplett durchlaufen (2026-05-17)
+- [x] `/health` und `/health/ready` grün gegen `https://mcp-knowledge2.fly.dev` (2026-05-17, `{"status":"ready","checks":{"db":"ok","blob":"ok"}}`)
+- [x] OAuth-Facade Discovery + JWKS public erreichbar (`curl /.well-known/oauth-authorization-server`)
+- [ ] Smoke-Roundtrip put → get → list → search → share → delete grün — siehe Block weiter oben (User-Hand-Test, blockiert durch OAuth-Redirect-URI-Fix unten)
 - [ ] RLS-Isolation: zweiter Smoke-User kann den Object eines anderen nicht lesen
 - [ ] Erstes Backup-File landet am nächsten Morgen 03:00 UTC im `BACKUP_BUCKET`
 - [ ] [INTEGRATION.md](./INTEGRATION.md) durchgelesen + entschieden, wie der Service in den eigenen Workflow eingebunden wird (claude.ai DCR oder mcp-approval2-OBO)
 - [ ] Restore-from-backup dry-run (`pg_restore` gegen Throwaway-DB) — **Post-Pilot acceptable**, Pflicht vor erstem echten User-Daten-Tag
+
+### Offen für 2026-05-18 (Pilot-Deploy-Day Tail)
+
+- [ ] **Token-Rotation** (Doppler-Leak-Hygiene aus 2026-05-16): Google-OAuth-Client-Secret, R2-Tokens, JWT-Keys, internal Tokens. Großteils External-Console-Arbeit.
+- [ ] **GCP-Console: OAuth-Client Redirect-URI** von `https://knowledge.ai-toolhub.org/auth/google/callback` auf `https://knowledge2.ai-toolhub.org/auth/google/callback` umstellen. 1 Klick. Blockiert den authentisierten Smoke-Roundtrip oben.
+- [ ] **TLS-Cert für `knowledge2.ai-toolhub.org`** — DNS-01 validating, sollte morgen früh durch sein. Managed by `fly_cert.knowledge2` im Schwester-Repo TF (frisch importiert heute).
+- [ ] **End-to-End MCP-Test via Claude.ai** — User-Hand-Test, exercised whole flow (DCR → authorize → token → MCP tools/call).

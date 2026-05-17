@@ -3,6 +3,18 @@
 > **Audience**: on-call operator. Steps are copy-pasteable, idempotent
 > where safe, destructive operations explicitly marked.
 
+## Lessons learned 2026-05-17 Pilot-Deploy
+
+Vier konkrete Bugs, die auf dem Pilot-Deploy-Day hochgekommen sind und beim nächsten Bootstrap nicht mehr passieren sollen. Fixes sind alle eingespielt (commit 49cdb9a + 61cdfb9 für Code; Doppler-Fix für R2).
+
+1. **pg-boss v10 verlangt `createQueue()` vor `work()`/`schedule()`.** Ohne explizites Anlegen aller Queues vor dem Scheduling crasht der App-Boot mit `fatal error during boot: Queue uploads.sweep_expired not found`. Fix in [src/crons/runner.ts](../../src/crons/runner.ts): Loop, der alle 5 Cron-Queues vor dem ersten Schedule-Call anlegt. Beim Hinzufügen einer neuen Queue: an dieselbe Stelle eintragen, sonst Boot-Crash.
+
+2. **`/health/ready` differenziert DB (load-bearing) vs Blob (opportunistic).** Jeder Request liest/schreibt Postgres — DB-Fail = 503. Blob ist anders: nur Bodies > 16 KB persistieren in R2, Metadata + kleine Bodies funktionieren ohne R2. Daher Blob-Fail → `status="degraded"` mit HTTP 200, damit der Fly-Proxy weiter routet. Per-Op-Fehler propagieren wenn der Blob-Pfad tatsächlich getroffen wird. Fix in [src/routes/health.ts](../../src/routes/health.ts).
+
+3. **R2 EU-jurisdiction-Endpoint braucht `.eu.` im Hostname.** Die 4 v2-Buckets (`mcp-{approval,knowledge}2-{blob,backup}-eu`) leben in CF's EU-Jurisdiction. `BLOB_ENDPOINT=https://<account>.r2.cloudflarestorage.com` (Global-Endpoint) gibt **403 "bucket not found"** für EU-Buckets — die Fehlermeldung ist irreführend, das Token ist korrekt scoped. Fix: `BLOB_ENDPOINT=https://<account>.eu.r2.cloudflarestorage.com` (mit `.eu.`) in Doppler. Token-Rotation hätte den Drift NICHT gefixt. Siehe [reference_r2_eu_jurisdiction_endpoint.md](../../.claude/memory/reference_r2_eu_jurisdiction_endpoint.md) für die Gegen-Maßnahme.
+
+4. **R2-Bucket-403 ist meistens Endpoint-Drift, nicht Token-Drift.** Wenn ein neuer Bucket "not found / 403" sagt: zuerst `BLOB_ENDPOINT` auf `.eu.r2.cloudflarestorage.com`-Form prüfen (siehe oben), bevor man Token rotiert oder Permissions neu setzt. Der Token-Rotation-Reflex kostete heute >30 Minuten.
+
 ## Quick reference
 
 | Task | Command |

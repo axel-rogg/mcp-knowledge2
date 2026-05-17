@@ -1,8 +1,10 @@
 # Strategie — Pilot auf Fly.io (aktive Linie)
 
+> **Stand 2026-05-17 Pilot-Deploy-Day:** Pilot ist **end-to-end LIVE**. `https://mcp-knowledge2.fly.dev/health/ready` grün (`{"status":"ready","checks":{"db":"ok","blob":"ok"}}`). Schwester `https://mcp2.ai-toolhub.org/health` ebenfalls grün. 3 Deploy-Bugs gefixt (pg-boss v10 createQueue, `/health/ready`-Differenzierung, R2 EU-jurisdiction-Endpoint mit `.eu.`). 4 Punkte offen für 2026-05-18 — siehe [PILOT-READINESS.md §"Offen für 2026-05-18"](./PILOT-READINESS.md#offen-für-2026-05-18-pilot-deploy-day-tail). Schwester-Doku: [`mcp-approval2/docs/privat.md`](https://github.com/axel-rogg/mcp-approval2/blob/main/docs/privat.md).
+>
 > **Stand 2026-05-17:** Postgres-Backend von Fly MPG auf Neon Free Tier umgestellt — siehe [PLAN-fly-terraform.md](plans/active/PLAN-fly-terraform.md) + Schwester-Repo [`mcp-approval2/terraform/environments/privat/neon-knowledge2.tf`](https://github.com/axel-rogg/mcp-approval2/blob/main/terraform/environments/privat/neon-knowledge2.tf).
 >
-> **Status:** ✅ **Aktiv, 2026-05-16** — Authoritative für die produktive Inbetriebnahme. Single-Target auf Fly.io (Frankfurt). Railway als optionaler Fallback dokumentiert. Cloudflare Workers als Compute-Target ist geprüft + bewusst geparkt (siehe [STRATEGIE.md](./STRATEGIE.md)).
+> **Status:** ✅ **Live, 2026-05-17** — Authoritative für die produktive Inbetriebnahme. Single-Target auf Fly.io (Frankfurt). Railway als optionaler Fallback dokumentiert. Cloudflare Workers als Compute-Target ist geprüft + bewusst geparkt (siehe [STRATEGIE.md](./STRATEGIE.md)).
 > **Owner:** Axel
 > **Voraussetzung:** AS-3 Code-Complete auf `feat/as3-cutover`.
 
