@@ -455,11 +455,22 @@ async function removeMember(groupId: string, userIdToRemove: string) {
 
 ---
 
-## 7. Cascade-Hook bei `addObjectRef` (Item 7) — **Cycle-Detection-Order beachten**
+## 7. Cascade-Hook bei `addObjectRef` (Item 7) — **Cycle-Detection-Order + Skill-Subtype-Filter**
 
 > **Engineering-Review-Finding (MEDIUM):** [refs.ts:114-136](../../../src/storage/refs.ts) macht heute BFS-Depth-32 mit Random-Reads auf `objects`. Plan §7 hängt einen `FOR UPDATE` auf parent-Skill dahinter in derselben TX. **Lock-Order-Risiko bei parallelen Diamond-Cascades.**
 >
 > **Sequence-Fix:** Cycle-Detection läuft VOR `FOR UPDATE`. Dann Lock-Acquisition als single-point. Diamond-Cascade-Race wird durch UNIQUE-Index aus 0020 + `INSERT ON CONFLICT DO NOTHING` aufgefangen.
+
+> **Test-Plan-Review-Finding (MEDIUM, neue Klarstellung):** `objects.cascade_on_share BOOLEAN DEFAULT TRUE` aus Migration 0019 ist auf JEDER Object-Row. Ohne weitere Klammern könnte ein Memo (subtype='memo') mit `cascade_on_share=TRUE` ein nicht-intendiertes Cascade auslösen wenn jemand `object_refs(role='skill_resource', from=memo, to=doc)` einfügt. Semantisch unsinnig, aber Code würde versuchen zu cascaden.
+>
+> **Decision für Phase 1 Cascade-Trigger-Logic:** Cascade-Hook in `addObjectRef` triggert **NUR wenn ALLE drei Bedingungen** matchen:
+> 1. `role IN BUNDLE_ROLES` (Phase 1: `['skill_resource']`)
+> 2. `parent.cascade_on_share = TRUE` (Object-Level-Opt-Out möglich)
+> 3. **`parent.subtype = 'skill_manifest'`** (semantischer Filter — nur echte Skills cascaden)
+>
+> Implementierung als 3-fach-Conjunction-Check im Code, kein Schema-Change. Test-Case `cascade does NOT fire on a non-skill object_ref even with cascade_on_share=TRUE` ist in [TEST-PLAN](../../security/TEST-PLAN-SHARING-PHASE-1-2026-05-17.md) §7 (Edge-Case k') aufgenommen.
+>
+> Bei Erweiterung auf weitere Cascade-Familien (z.B. `recipe_ingredient` für Recipe-Bundle-Sharing): `BUNDLE_ROLES` + `BUNDLE_PARENT_SUBTYPES = ['skill_manifest']` analog erweitern. Phase 2+.
 
 [src/storage/refs.ts](../../../src/storage/refs.ts) — bei `addObjectRef(from, to, role)`:
 
@@ -583,9 +594,21 @@ Read-Audit-Volumen-Cap: in Phase 1 keine Aggregation, bei Bedarf in Phase 2.
 
 ---
 
-## 11. Tests
+## 11. Tests — **detaillierter Test-Plan in eigenem Doc**
 
-> **Engineering-Review-Findings (HIGH, 3 Punkte):**
+> **Stand 2026-05-17:** Vollständiger Test-Plan in [docs/security/TEST-PLAN-SHARING-PHASE-1-2026-05-17.md](../../security/TEST-PLAN-SHARING-PHASE-1-2026-05-17.md) (~5200 Wörter, 46 Test-Cases mit kopierbaren vitest-Skeletons) + Fixtures-Setup für Multi-User-Multi-Group-Tests.
+>
+> **Coverage-Übersicht:**
+> - 28 RLS-Integration-Tests (`tests/integration/groups.test.ts`) — 10 Pflicht + 5 Edge-Cases + 13 Sicherheits-Spezifika (IDOR, Embedding-Inversion-Block, Audit-Gating, GDPR-Erase-FK, Member-CASCADE)
+> - 8 Crypto-Unit-Tests (`tests/unit/crypto.test.ts`) — AAD-v2-Domain-Separation, Per-Object-DEK-Entropie, Group-Master-Cache-TTL, Stale-Master-Version
+> - 7 Contract-Tests (approval2 `groups-roundtrip.test.ts`) — Wire-Format zwischen approval2 ↔ KC2
+> - 3 Pilot-Smoke E2E-Erweiterungen für `pilot-smoke.sh`
+>
+> **Test-Plan-Review-Finding (HIGH — Pflicht-Test-Case):** Removed-Member-IDOR-Vektor. Migration 0019 `grants_self`-Policy: User der aus Group-X removed wurde aber noch in Group-Y aktiv ist, könnte über `grants_self`-Permissive-Check (granted_by=current ODER granted_to_group_id IN active-memberships) theoretisch Group-X-Grants lesen, wenn die Subquery nicht korrekt filtert. Bei genauer Analyse durch Row-spezifischen Check sicher, aber **expliziter Test-Case erforderlich**: `removed member of group-X cannot see group-X grant-rows even when active in group-Y` ([TEST-PLAN §7e](../../security/TEST-PLAN-SHARING-PHASE-1-2026-05-17.md)).
+>
+> **Aufwand:** ~12-16h Test-Engineering, ~1530 Lines Test-Code. Davon ~8h Integration-Fixtures + RLS-Cases (Item 1 vorab), ~3h Crypto-Unit, ~3h Contract + Pilot-Smoke + Doku.
+
+### Vorigere Engineering-Review-Findings (HIGH, 3 Punkte):
 > 1. **Testcontainer-Pattern funktioniert.** [tests/integration/rls.test.ts:43-50](../../../tests/integration/rls.test.ts) apply'd alle Migrations lexikographisch — neue 0019/0020 laufen automatisch mit. Aber keiner der 28 existing Tests prüft `granted_to_group_id` — Phase-1-PR muss mind. **5 neue RLS-Tests** mitbringen (Group-Member-Read, Removed-Member-Block, Cross-Group-Leak-Block, Cascade-INSERT-RESTRICTIVE-Check, Diamond-Cascade-Uniqueness).
 > 2. **Storage-Unit-Tests gibt es nicht** in KC2. Tests liegen in `tests/{unit,integration,contract}/`. Cycle-Detection-Race + Lazy-Migration-Atomicity → `tests/integration/groups.test.ts` (gleicher Container-Pattern), Crypto-Domain-Separation → `tests/unit/crypto.test.ts`.
 > 3. **Contract-Tests** in approval2: `apps/server/tests/contract/groups-roundtrip.test.ts` (KC2 `/v1/groups/*`-Shape) + `shares-with-group.test.ts` (Cascade-Antwort mit `via_cascade_from_object_id`).
