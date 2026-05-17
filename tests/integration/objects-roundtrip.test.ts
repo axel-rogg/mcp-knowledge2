@@ -496,6 +496,35 @@ describe('refs roundtrip — PLAN-document-linking P1', () => {
     const r = await call('GET', `/v1/objects/${id}?refs_limit=51`);
     expect(r.status).toBe(400);
   });
+
+  // ─── PLAN-document-linking §10.5 P5: Soft-Validation Mandatory-Summary ─
+  it('POST /refs returns 200+warnings when target has no description', async () => {
+    // Create target WITHOUT description
+    const from = await create('skill_manifest', 'Source', 'sum source');
+    const toRes = await call('POST', '/v1/objects', {
+      body: { subtype: 'doc', title: 'no-summary-doc', body_b64: b64('body') },
+    });
+    expect(toRes.status).toBe(201);
+    const to = (await toRes.json()).id as string;
+
+    const r = await call('POST', `/v1/objects/${from}/refs`, {
+      body: { to_id: to, role: 'resource' },
+    });
+    expect(r.status).toBe(200); // not 204 — body carries warnings
+    const j = (await r.json()) as { warnings: string[] };
+    expect(j.warnings).toHaveLength(1);
+    expect(j.warnings[0]).toContain('no description');
+    expect(j.warnings[0]).toContain(to);
+  });
+
+  it('POST /refs returns 204 when target has description (no warnings)', async () => {
+    const from = await create('skill_manifest', 'Source', 'sum');
+    const to = await create('doc', 'with-summary', 'a proper summary');
+    const r = await call('POST', `/v1/objects/${from}/refs`, {
+      body: { to_id: to, role: 'resource' },
+    });
+    expect(r.status).toBe(204);
+  });
 });
 
 describe('shares roundtrip — Cross-Service Contract', () => {

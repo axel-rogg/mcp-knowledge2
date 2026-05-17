@@ -56,21 +56,39 @@ export interface AddRefInput {
 /** Maximum graph depth searched for a cycle when adding a new ref. */
 const CYCLE_DETECTION_DEPTH = 32;
 
-export async function addRef(input: AddRefInput): Promise<void> {
+export interface AddRefResult {
+  /**
+   * Soft-validation warnings (PLAN-document-linking §10.5 R/P5).
+   * Caller propagates these to the MCP-tool-response so the agent can
+   * see them. The ref is still added — warnings are advisory.
+   */
+  warnings: string[];
+}
+
+export async function addRef(input: AddRefInput): Promise<AddRefResult> {
   const ctx = requireContext();
   if (!ctx.userId) throw errBadRequest('user context required');
   if (input.fromId === input.toId) {
     throw errBadRequest('self-ref not allowed (from_id === to_id)');
   }
 
+  const warnings: string[] = [];
   await withUserTx(ctx.userId, ctx.requestId, async (db) => {
-    // verify both ends visible under RLS
+    // verify both ends visible under RLS, plus pull target description for
+    // soft-summary-validation (PLAN-doc-linking §3.4 + P5).
     const visible = await db
-      .select({ id: objects.id })
+      .select({ id: objects.id, description: objects.description })
       .from(objects)
       .where(or(eq(objects.id, input.fromId), eq(objects.id, input.toId)));
     if (visible.length < 2) {
       throw errNotFound('one or both objects not found or not visible');
+    }
+
+    const toRow = visible.find((r) => r.id === input.toId);
+    if (toRow && (toRow.description === null || toRow.description.trim() === '')) {
+      warnings.push(
+        `target object ${input.toId} has no description — agent will load defensively when traversing refs. Set description via objects.update for lazy-load to work.`,
+      );
     }
 
     // Cycle detection: would adding (from → to) create a cycle?
@@ -127,6 +145,7 @@ export async function addRef(input: AddRefInput): Promise<void> {
       }
     }
   });
+  return { warnings };
 }
 
 export async function removeRef(fromId: string, toId: string, role: string): Promise<void> {

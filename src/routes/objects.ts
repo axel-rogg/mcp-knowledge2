@@ -222,8 +222,17 @@ export const objectsRouter = new Hono()
   .post('/objects/:id/refs', async (c) => {
     const id = c.req.param('id');
     const b = AddRefBody.parse(await c.req.json());
-    await addRef({ fromId: id, toId: b.to_id, role: b.role, meta: b.meta });
-    await emitAudit({ action: 'object.ref_add', resourceId: id, result: 'success', details: { to: b.to_id, role: b.role } });
+    // PLAN-doc-linking P5: addRef returns { warnings }. REST emittiert 200
+    // mit body wenn Warnings da, 204 wenn alles clean — Backward-compat
+    // mit Callers die nur Status checken.
+    const { warnings } = await addRef({ fromId: id, toId: b.to_id, role: b.role, meta: b.meta });
+    await emitAudit({
+      action: 'object.ref_add',
+      resourceId: id,
+      result: 'success',
+      details: { to: b.to_id, role: b.role, warning_count: warnings.length },
+    });
+    if (warnings.length > 0) return c.json({ warnings }, 200);
     return c.body(null, 204);
   })
   .delete('/objects/:id/refs', async (c) => {

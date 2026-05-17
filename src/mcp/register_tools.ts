@@ -347,7 +347,12 @@ export function registerAllTools(): void {
   });
   registerTool({
     name: 'objects.add_ref',
-    description: 'Add a knowledge-graph ref from one object to another.',
+    description:
+      'Add a knowledge-graph ref from one object to another. Roles: ' +
+      '`resource` (target is part of source — load with source), `references` ' +
+      '(see-also, optional), `depends_on` (functional prerequisite). ' +
+      'Returns soft `warnings[]` if target has no description (agent will then ' +
+      'load defensively, killing the lazy-load advantage).',
     inputSchema: zodToJsonSchema(RefInput),
     annotations: {
       title: 'Add ref',
@@ -357,7 +362,7 @@ export function registerAllTools(): void {
     },
     handler: async (args) => {
       const input = RefInput.parse(args);
-      await addRef({
+      const { warnings } = await addRef({
         fromId: input.from_id,
         toId: input.to_id,
         role: input.role,
@@ -367,9 +372,9 @@ export function registerAllTools(): void {
         action: 'object.ref_add',
         resourceId: input.from_id,
         result: 'success',
-        details: { to: input.to_id, role: input.role },
+        details: { to: input.to_id, role: input.role, warning_count: warnings.length },
       });
-      return jsonResult({ ok: true });
+      return jsonResult({ ok: true, warnings });
     },
   });
 
