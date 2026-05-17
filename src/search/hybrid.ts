@@ -64,7 +64,17 @@ export async function hybridSearch(input: HybridSearchInput): Promise<HybridSear
   // skills AND all apps" need both lists in one search.
   const subtypeClause = ((): ReturnType<typeof sql> => {
     const branches: ReturnType<typeof sql>[] = [];
-    if (subtypeFilter) branches.push(sql`subtype = ANY(${subtypeFilter})`);
+    if (subtypeFilter) {
+      // sql`...ANY(${jsArray})` expandiert in drizzle/node-pg zu Tuple-
+      // Syntax `($3, $4)` — wirft "op ANY/ALL requires array on right side".
+      // sql.join produziert `$3, $4` (Komma-separierte Liste), die wir in
+      // `subtype IN (...)` packen — semantisch identisch zu `= ANY(array)`.
+      const list = sql.join(
+        subtypeFilter.map((s) => sql`${s}`),
+        sql`, `,
+      );
+      branches.push(sql`subtype IN (${list})`);
+    }
     if (prefixFilter) {
       for (const p of prefixFilter) {
         branches.push(sql`subtype LIKE ${p + '%'}`);
