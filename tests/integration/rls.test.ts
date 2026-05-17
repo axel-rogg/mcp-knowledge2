@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 let container: StartedPostgreSqlContainer;
@@ -36,11 +36,18 @@ beforeAll(async () => {
     `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO knowledge_admin`,
   );
 
+  // Apply ALL migrations in lexikographischer Reihenfolge — sonst landet
+  // Test gegen pre-ADR-0004-Schema (kind-Column NOT NULL aus 0000) waehrend
+  // Production-Schema schon 0009_drop_kind hat. Pattern matched
+  // `release_command = "npm run db:migrate"` in fly.toml.
   const migrationsDir = join(process.cwd(), 'drizzle', 'migrations');
-  const init = await readFile(join(migrationsDir, '0000_init.sql'), 'utf8');
-  const rls = await readFile(join(migrationsDir, '0001_rls.sql'), 'utf8');
-  await rootClient.query(init);
-  await rootClient.query(rls);
+  const files = (await readdir(migrationsDir))
+    .filter((f) => f.endsWith('.sql'))
+    .sort();
+  for (const file of files) {
+    const sql = await readFile(join(migrationsDir, file), 'utf8');
+    await rootClient.query(sql);
+  }
   await rootClient.end();
 
   const host = container.getHost();
