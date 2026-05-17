@@ -88,7 +88,7 @@
 - **Fix:**
   - Variante A (strikt): `payload.sub` muss zu einer `users.approval2_user_id`-Spalte (Migration: ALTER TABLE) mappen, und der `(approval2_user_id → kc2_user_id)`-Mapping muss matchen mit `resolveByEmail(on_behalf_of)`.
   - Variante B (light): explizit dokumentieren "approval2-as-IdP, Facade-Key-Compromise = full take-over" und das Trust-Model in `SECURITY.md` schärfen.
-- **Status:** ❌ OPEN — **Cutover-Blocker** vor Multi-User.
+- **Status:** ✅ FIXED 2026-05-17 (commit aa6f135). SEC-K-006-Migration legte `external_id`-Spalte an; on_behalf_of.ts cross-checked jetzt `payload.sub` gegen `user.externalId`. Migration-Phase (external_id=NULL) → skip-Check + Warning-Log. Multi-User-ready sobald alle Users über syncFromApproval2 gelaufen sind.
 
 ### SEC-K-002 — `MCP_APPROVAL_JWKS_URL` akzeptiert jede HTTPS-URL → Operator-Misconfig = forge-all
 
@@ -111,7 +111,7 @@
   ).optional()
   ```
   Analog für `GOOGLE_JWKS_URL`. Zusätzlich Path-Check auf `/.well-known/jwks.json`.
-- **Status:** ❌ OPEN — Cutover-Blocker.
+- **Status:** ✅ FIXED 2026-05-17 (commit c9ea921). env.ts: GOOGLE_JWKS_URL + MCP_APPROVAL_JWKS_URL beide mit Host-Allowlist + https-only + Path-Check auf `/.well-known/jwks.json`.
 
 ### SEC-K-003 — DCR `/oauth/register` komplett unauthentifiziert, Internet-public
 
@@ -126,7 +126,7 @@
   1. **Sofort via Lockdown:** Option A oben — Endpoint nicht mehr public. Bleibt dann nur für den `.flycast`-Egress von approval2 erreichbar, was approval2 ohnehin nicht braucht (es nutzt OBO).
   2. **Code-Level (Cutover-Pflicht):** assert `env.ALLOWED_EMAILS.length > 0 || env.GOOGLE_HD_ALLOWLIST.length > 0` beim Boot in `NODE_ENV=production`. `provisionFromGoogleLogin` first-login-admin nur wenn `BOOTSTRAP_ADMIN_EMAIL` env-var matcht.
   3. **Auch bei Lockdown:** `/oauth/register` mit Service-Token oder Admin-issued Initial-Access-Token gaten — Defense-in-Depth.
-- **Status:** ❌ OPEN — Lockdown ist der primäre Hebel; Code-Fix für `provisionFromGoogleLogin` muss trotzdem.
+- **Status:** ✅ FIXED 2026-05-17 (Lockdown commit d414604 + Code commit bc15b78). Beide Hebel umgesetzt: (1) KC2 ist Internal-Only via flycast, /oauth/register vom Internet unerreichbar. (2) server.ts assertProductionAuthGuards() throwt beim Boot wenn ALLOWED_EMAILS + GOOGLE_HD_ALLOWLIST + BOOTSTRAP_ADMIN_EMAIL alle leer in production. provisionFromGoogleLogin nutzt BOOTSTRAP_ADMIN_EMAIL-Match statt First-Login-Admin.
 
 ### SEC-K-004 — `object_revisions` sind NICHT entschlüsselbar (AAD-recordType-Mismatch)
 
@@ -139,7 +139,7 @@
 - **Security-Aspekt:** ein naiver "Fix" (read-side auf `recordType='objects'` umstellen) öffnet **Cross-Record-Replay**: dieselbe `(owner_id, object_id, DEK)`-Kombination würde dann sowohl Live-Row als auch Revision-Rows authentifizieren. Eine historische Ciphertext-Row könnte in die Live-Body-Spalte injiziert werden und GCM-verify würde greifen.
 - **Fix:**
   - Write-Side fixen: `updateObject` muss die alte Plaintext **decrypten** (mit Live-AAD `'objects'`), dann **re-encrypten** unter Revision-AAD `'object-revisions'`, bevor sie in `object_revisions` geschrieben wird. Kosten: eine Crypto-Op extra pro Update. Read-Side bleibt unverändert.
-- **Status:** ❌ OPEN — funktionaler Bug UND Security-Issue.
+- **Status:** ⏸ DEFERRED — funktionaler Bug ohne aktiven Use heute (Revisions werden im Pilot nicht abgerufen). Sauberer Fix verlangt Decrypt-Then-Reencrypt-on-Write — naiver Same-AAD-Fix öffnet Cross-Record-Replay. Cross-Replay-Exploit verlangt DB-Write-Access (durch RLS blockiert). Multi-User-Pre-Cutover anpacken.
 
 ### SEC-K-005 — HKDF-Salt = plain userId → leaked Master + bekannte User-IDs = alle DEKs
 
@@ -157,7 +157,7 @@
   2. HKDF-Salt: `salt = userId || dek_salt`.
   3. Bei GDPR-Erase: `UPDATE users SET dek_salt = '\x00...' WHERE id = $1` UND alle existierenden DEK-encrypted Bodies neu-encrypten ist unnötig — Tombstone reicht, weil ohne Salt der DEK nicht mehr derivierbar ist.
   4. Backward-Compat: bei NULL/zero-Salt-Rows alten HKDF-Pfad als Fallback; Migration cron-job re-encryptet schrittweise.
-- **Status:** ❌ OPEN — Cutover-Pflicht für Multi-User; Single-User-Pilot toleriebar.
+- **Status:** ⏸ DEFERRED Multi-User-Pre-Cutover. Solo-Pilot single-user → kein Cross-User-Crypto-Shredding-Bedarf. Fix verlangt `users.dek_salt`-Migration + lazy re-derive across all encrypted bodies. Multi-step careful Migration.
 
 ### SEC-K-006 — `/v1/internal/users/sync` trusts every claim from approval2 → privilege channel via Email-collision
 
@@ -172,11 +172,41 @@
   2. Bei mid-flight Email-Collision: refuse wenn `existing.external_id IS NOT NULL && existing.external_id != input.external_id`.
   3. `suspended → active`-Transition aus Sync blocken — nur via dediziertem Admin-Endpoint mit Audit-Event.
   4. `role`-Spalte explizit gegen Sync-Override schützen (NOT IN sync schema, gut so — aber DB-Constraint als Defense-in-Depth).
-- **Status:** ❌ OPEN — Cutover-Pflicht.
+- **Status:** ✅ FIXED 2026-05-17 (commit 6aae205). Migration 0012 fügt `external_id` UNIQUE-Column auf users. syncFromApproval2 persistiert input.approval2UserId als external_id beim Create. Bei UPDATE: refuse wenn existing.externalId != input.approval2UserId (Email-Collision-Take-Over). Plus: status state-machine block für suspended→active (Re-Activation nur via separater Admin-Path mit Audit-Trail).
 
 ---
 
 ## HIGH <a id="high"></a>
+
+**Status-Übersicht 2026-05-17 nach Sicherheits-Sprint:**
+
+| # | Status | Commit |
+|---|---|---|
+| SEC-K-007 | ⏸ DEFERRED — würde Claude.ai-MCP-Connect blocken wenn KC2 später re-public wird. Hostname-Allowlist statt blanket-reject. | — |
+| SEC-K-008 | ⏸ DEFERRED — gleicher Defer-Kontext wie 007 (localhost-redirect für native MCP-Clients legit). | — |
+| SEC-K-009 | ⏸ DEFERRED — Cross-Repo Service-Token-Split braucht approval2-side change in Knowledge-Adapter. | — |
+| SEC-K-010 | ✅ FIXED — Migration 0013 + obo_jti_seen table + INSERT-on-Conflict-Replay-Detect. Sweep-Cron alle 5 min. | (siehe SEC-K-010-Section unten) |
+| SEC-K-011 | ✅ FIXED — JWKS_CACHE_TTL_SECONDS 86400s → 600s. | d7d2e21 |
+| SEC-K-012 | ✅ FIXED — consumeAuthCode mit .returning() + race-detect. | d7d2e21 |
+| SEC-K-013 | ✅ FIXED — SELECT FOR UPDATE + Family-Revoke traverse rotatedTo-Chain. | aa6f135 |
+| SEC-K-014 | ✅ FIXED — MAX_UPLOAD_BYTES 5GB → 64MB. | ea2ed88 |
+| SEC-K-015 | ✅ ELIMINIERT — /metrics ist post-Lockdown nicht mehr public. | d414604 |
+| SEC-K-016 | ⏸ DEFERRED — wie 009, Cross-Repo HMAC-Token. | — |
+| SEC-K-017 | ✅ FIXED — Admin-Row-Auto-Claim-Guard im provisionFromGoogleLogin. | ea2ed88 |
+| SEC-K-018 | ✅ FIXED — userRateLimit({600,/v1}, {300,/mcp}) mit ctx.userId-keying. | (commit nach Batch-5) |
+| SEC-K-019 | ⏸ DEFERRED — Backup-Key-ID Dual-Window verlangt sauberes Format-Migration. | — |
+| SEC-K-020 | ⏸ DEFERRED — AAD-Change broken existing-backups wenn naiv. | — |
+| SEC-K-021 | ⏸ DEFERRED — Threat-Model-Doc-Only-Issue, schon in SECURITY.md adressiert. | — |
+| SEC-K-022 | ✅ FIXED — pg_dump nutzt PGPASSWORD-env statt URL-in-argv. | ea2ed88 |
+| SEC-K-023 | ✅ FIXED — Migration 0014 `vec_owner_only`-RLS, drop shared-vec-leak. | (commit nach Batch-5) |
+| SEC-K-024 | ⏸ DEFERRED — multi-tenant-Cross-User-Oracle, kein Solo-Pilot-Risk. | — |
+| SEC-K-025 | ✅ FIXED — include_body=true throwt 413 wenn bodySize > 1 MB. | ea2ed88 |
+| SEC-K-026 | ✅ FIXED — assertBlobKeyShape auch in createObject + updateObject Write-Path. | ea2ed88 |
+| SEC-K-027 | ✅ FIXED — ftsRank + vectorScore aus Response gestrippt. | d7d2e21 |
+| SEC-K-028 | ✅ ELIMINIERT — post-Lockdown sind `/v1/internal/*` + `/mcp` nicht mehr public. | d414604 |
+| SEC-K-029 | ✅ FIXED — recordType='idempotency' eigener Slot in AAD-Union. | d7d2e21 |
+| SEC-K-030 | ⏸ DEFERRED — Network-Retry-Risk niedrig im Solo-Pilot. | — |
+
 
 ### SEC-K-007 — DCR auto-issues `token_endpoint_auth_method='none'` (Public-Client) ohne Per-Client-Gate
 
