@@ -29,6 +29,11 @@ export interface HybridSearchHit {
   subtype: string | null;
   title: string | null;
   score: number;
+  // SEC-K-027: ftsRank + vectorScore wurden früher mit-emittiert. Das ist ein
+  // Triangulation-Side-Channel: ein Angreifer mit Write-Surface kann
+  // Object-Erstellung + Score-Drift korrelieren um Existenz/Content privater
+  // Rows zu inferieren. Felder bleiben für Debug-Mode optional in der Type-
+  // Definition, werden aber im Default-Response nicht mehr gesetzt.
   ftsRank?: number | undefined;
   vectorScore?: number | undefined;
 }
@@ -183,6 +188,11 @@ export async function hybridSearch(input: HybridSearchInput): Promise<HybridSear
     const ftsScoreById = new Map(ftsHits.map((h) => [h.id, h.score]));
     const vecScoreById = new Map(vectorHits.map((h) => [h.id, h.score]));
 
+    // SEC-K-027: ftsRank + vectorScore werden nicht mehr emittiert
+    // (Triangulation-Side-Channel-Schutz). Debug-Mode-Flag könnte sie
+    // später re-enablen wenn benötigt — heute kein Use-Case.
+    void ftsScoreById;
+    void vecScoreById;
     return fused.map((f) => {
       const meta = metaById.get(f.id) ?? { subtype: null, title: null };
       return {
@@ -190,8 +200,6 @@ export async function hybridSearch(input: HybridSearchInput): Promise<HybridSear
         subtype: meta.subtype,
         title: meta.title,
         score: f.score,
-        ftsRank: ftsScoreById.get(f.id),
-        vectorScore: vecScoreById.get(f.id),
       };
     });
   });

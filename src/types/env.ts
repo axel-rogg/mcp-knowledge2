@@ -38,7 +38,10 @@ const EnvSchema = z.object({
   //     directly to KC2 (rare, normally approval2 fronts).
   //   * KC2's own facade (SELF_OAUTH_ISSUER) — issued by /oauth/token.
   // JWKS for Google is the well-known endpoint; JWKS for self is in-process.
-  JWKS_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(86_400),
+  // SEC-K-011: 24h cache hielt revoked Google/approval2-Keys 24h trusted.
+  // 600s matched Google's eigene Cache-Control-Empfehlung — Re-Fetch-Cost
+  // (~150ms/h pro Pod) ist akzeptabel.
+  JWKS_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(600),
 
   // OAuth-facade (K3/K4): KC2 issues its own MCP-client tokens.
   SELF_OAUTH_ISSUER: z.string().url(),

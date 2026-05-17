@@ -17,7 +17,12 @@ export type RecordType =
   // 'objects-desc' was removed alongside migration 0003. description is
   // plaintext-only; nothing AAD-binds it.
   | 'objects-quality'
-  | 'object-revisions';
+  | 'object-revisions'
+  // SEC-K-029: idempotency-Cipher hatte recordType='object-revisions' als
+  // "closest neutral" reused — Cross-AAD-Slot wenn jemand mal die objectId-
+  // Invariante in middleware lockert. Dediziertes recordType eliminiert die
+  // Drift. Alte idempotency-Records werden via TTL-Sweep aged-out.
+  | 'idempotency';
 
 export interface AadFields {
   recordType: RecordType;

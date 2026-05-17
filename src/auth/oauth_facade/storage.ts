@@ -181,14 +181,17 @@ export async function consumeAuthCode(code: string): Promise<AuthCodeRow> {
     if (!row) throw errUnauthorized('invalid authorization code');
     if (row.consumedAt) throw errUnauthorized('authorization code already used');
     if (row.expiresAt < nowMs()) throw errUnauthorized('authorization code expired');
+    // SEC-K-012 race-detect: UPDATE returnt mit .returning() die geänderten
+    // Rows. Wenn 0 → ein paralleler Token-Exchange hat den consumedAt-Check
+    // schon gewonnen → reject (double-issue prevention).
     const upd = await db
       .update(oauthAuthCodes)
       .set({ consumedAt: nowMs() })
-      .where(and(eq(oauthAuthCodes.codeHash, codeHash), eq(oauthAuthCodes.consumedAt as never, null as never)));
-    // best-effort race detection: drizzle pg returns the result on .returning();
-    // we used UPDATE without RETURNING so check that a row was actually
-    // matched — fallback re-read.
-    void upd;
+      .where(and(eq(oauthAuthCodes.codeHash, codeHash), eq(oauthAuthCodes.consumedAt as never, null as never)))
+      .returning({ id: oauthAuthCodes.codeHash });
+    if (upd.length !== 1) {
+      throw errUnauthorized('authorization code race — already consumed');
+    }
     return {
       clientId: row.clientId,
       userId: row.userId,
