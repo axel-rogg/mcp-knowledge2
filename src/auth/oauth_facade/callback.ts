@@ -13,6 +13,7 @@ import { logger } from '../../lib/logger.ts';
 import { decodeAuthorizeState } from './authorize.ts';
 import { mintAuthCode } from './storage.ts';
 import { provisionFromGoogleLogin } from '../../users/api.ts';
+import { resolveOrigin, buildRedirectUri } from '../../lib/origin.ts';
 
 export const callbackRouter = new Hono();
 
@@ -43,8 +44,12 @@ interface GoogleTokenResponse {
   scope?: string;
 }
 
-async function exchangeCodeForTokens(code: string): Promise<GoogleTokenResponse> {
+async function exchangeCodeForTokens(code: string, redirectUri: string): Promise<GoogleTokenResponse> {
   const env = loadEnv();
+  // CRITICAL: redirect_uri must EXACTLY match the value sent at /oauth/authorize.
+  // Google rejects with `redirect_uri_mismatch` otherwise. The caller derives
+  // it from the request-origin (= the URL Google actually called) via
+  // resolveOrigin() — guarantees parity with authorize.ts.
   const r = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -52,7 +57,7 @@ async function exchangeCodeForTokens(code: string): Promise<GoogleTokenResponse>
       code,
       client_id: env.GOOGLE_OAUTH_CLIENT_ID,
       client_secret: env.GOOGLE_OAUTH_CLIENT_SECRET,
-      redirect_uri: env.GOOGLE_OAUTH_REDIRECT_URI,
+      redirect_uri: redirectUri,
       grant_type: 'authorization_code',
     }).toString(),
   });
@@ -97,7 +102,12 @@ callbackRouter.get('/auth/google/callback', async (c) => {
 
   const state = decodeAuthorizeState(q.state);
 
-  const tokens = await exchangeCodeForTokens(q.code);
+  // Multi-Origin: redirect_uri muss EXAKT der gleiche sein wie in /authorize.
+  // Da Google an genau diese URL hier callbackt, ist `request.origin` der
+  // korrekte Wert. resolveOrigin validiert gegen ALLOWED_ORIGINS.
+  const callbackRedirectUri = buildRedirectUri(resolveOrigin(c.req.raw, env));
+
+  const tokens = await exchangeCodeForTokens(q.code, callbackRedirectUri);
   const id = await verifyGoogleIdToken(tokens.id_token);
 
   // K-D1: optional Workspace-domain allowlist.

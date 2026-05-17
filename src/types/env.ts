@@ -44,7 +44,19 @@ const EnvSchema = z.object({
   SELF_OAUTH_ISSUER: z.string().url(),
   GOOGLE_OAUTH_CLIENT_ID: z.string().min(1),
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().min(1),
+  // Single-value fallback (cron-context, legacy clients). Live OAuth flow
+  // derives `redirect_uri` from request-origin via resolveOrigin() to support
+  // Coop-Bypass via fly.dev URL (PLAN-coop-bypass-fly-dev §3.3 Option B).
   GOOGLE_OAUTH_REDIRECT_URI: z.string().url(),
+  // Allowlist of legitimate origins for this service (scheme://host[:port],
+  // https only). Used by resolveOrigin() to validate request-origins against
+  // Host-Header-Spoofing. Empty (default) = single-origin mode (= origin of
+  // SELF_OAUTH_ISSUER). CSV. New 2026-05-17 for Coop-fly.dev bypass.
+  ALLOWED_ORIGINS: z
+    .string()
+    .default('')
+    .transform((s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : []))
+    .refine((arr) => arr.every((o) => /^https:\/\//.test(o)), 'must be https URLs'),
   // Optional Workspace-domain allowlist (K-D1). CSV — empty = all domains ok.
   GOOGLE_HD_ALLOWLIST: z
     .string()

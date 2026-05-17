@@ -19,6 +19,7 @@ import { z } from 'zod';
 import { getClient } from './storage.ts';
 import { loadEnv } from '../../types/env.ts';
 import { errBadRequest, errUnauthorized } from '../../lib/errors.ts';
+import { resolveOrigin, buildRedirectUri } from '../../lib/origin.ts';
 
 export const authorizeRouter = new Hono();
 
@@ -83,10 +84,14 @@ authorizeRouter.get('/oauth/authorize', async (c) => {
     nonce: createHash('sha256').update(`${q.client_id}|${q.code_challenge}|${Date.now()}`).digest('base64url'),
   };
 
+  // Derive redirect_uri from request-origin (Multi-Origin support for
+  // Coop-Bypass via fly.dev). Validated against ALLOWED_ORIGINS.
+  const googleRedirectUri = buildRedirectUri(resolveOrigin(c.req.raw, env));
+
   // Build Google OAuth URL. Scopes: openid email profile (+ hd if allowlist).
   const googleUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   googleUrl.searchParams.set('client_id', env.GOOGLE_OAUTH_CLIENT_ID);
-  googleUrl.searchParams.set('redirect_uri', env.GOOGLE_OAUTH_REDIRECT_URI);
+  googleUrl.searchParams.set('redirect_uri', googleRedirectUri);
   googleUrl.searchParams.set('response_type', 'code');
   googleUrl.searchParams.set('scope', 'openid email profile');
   googleUrl.searchParams.set('access_type', 'online');

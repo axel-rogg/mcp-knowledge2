@@ -41,8 +41,17 @@ kill_timeout    = "30s"
   # ─── OAuth-facade (AS-3 K3/K4) ────────────────────────────────────────
   # SELF_OAUTH_ISSUER is the public URL of this Fly app — appears as `iss`
   # in tokens KC2 issues to MCP clients, and is the base for /.well-known.
+  # Stable single-value (User-Decision 2026-05-17 #3): MCP-Token-Audience-
+  # Trennung verlangt stabilen Issuer, auch wenn Client von alt-Origin (fly.dev
+  # bzw. knowledge2.ai-toolhub.org) verbindet.
   SELF_OAUTH_ISSUER         = "https://mcp-knowledge2.fly.dev"
+  # GOOGLE_OAUTH_REDIRECT_URI ist Fallback fuer Cron-Kontext ohne Request.
+  # Live OAuth-Flow deriviert redirect_uri pro Request via resolveOrigin()
+  # (siehe src/lib/origin.ts) gegen ALLOWED_ORIGINS-Allowlist.
   GOOGLE_OAUTH_REDIRECT_URI = "https://mcp-knowledge2.fly.dev/auth/google/callback"
+  # ALLOWED_ORIGINS: Multi-Origin-Allowlist fuer resolveOrigin (Coop-Bypass
+  # via fly.dev URL — siehe mcp-approval2/docs/plans/active/PLAN-coop-bypass-fly-dev.md).
+  ALLOWED_ORIGINS           = "https://knowledge2.ai-toolhub.org,https://mcp-knowledge2.fly.dev"
   # GOOGLE_OAUTH_CLIENT_ID + GOOGLE_OAUTH_CLIENT_SECRET come from Doppler.
 
   # Optional Workspace-`hd` allowlist + strict email whitelist (CSV, lower-cased).
