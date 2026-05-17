@@ -646,6 +646,106 @@ describe('search roundtrip — Cross-Service Contract', () => {
       expect(hit.subtype?.startsWith('app:')).toBe(true);
     }
   });
+
+  // ─── PLAN-document-linking §10.5 D5: Group-by-Parent ──────────────────
+  it('groups sub-doc hits under their parent skill when both match', async () => {
+    // Create a skill + a resource doc, both should match query "alpha"
+    const skill = (
+      await (
+        await call('POST', '/v1/objects', {
+          body: {
+            subtype: 'skill_manifest',
+            title: 'alpha-skill',
+            description: 'manifest for alpha',
+            body_b64: b64('alpha skill body'),
+          },
+        })
+      ).json()
+    ).id as string;
+    const doc = (
+      await (
+        await call('POST', '/v1/objects', {
+          body: {
+            subtype: 'doc',
+            title: 'alpha-doc',
+            description: 'alpha resource',
+            body_b64: b64('alpha doc body'),
+          },
+        })
+      ).json()
+    ).id as string;
+    // attach doc as resource of skill — makes doc is_subdoc=true
+    await call('POST', `/v1/objects/${skill}/refs`, {
+      body: { to_id: doc, role: 'resource' },
+    });
+
+    const r = await call('POST', '/v1/search', {
+      body: { query: 'alpha', limit: 10 },
+    });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      items: Array<{
+        id: string;
+        title: string;
+        childHits?: Array<{ id: string }>;
+        linkedParent?: { id: string };
+      }>;
+    };
+    // The skill should appear top-level; the doc should be its child (or
+    // suppressed from top-level).
+    const skillHit = body.items.find((h) => h.id === skill);
+    const docTopLevel = body.items.find((h) => h.id === doc);
+    expect(skillHit).toBeDefined();
+    expect(skillHit?.childHits?.some((c) => c.id === doc)).toBe(true);
+    expect(docTopLevel).toBeUndefined();
+  });
+
+  it('keeps orphan sub-doc top-level with linkedParent when parent did not match', async () => {
+    // Create skill that does NOT match query, plus doc that DOES match
+    const skill = (
+      await (
+        await call('POST', '/v1/objects', {
+          body: {
+            subtype: 'skill_manifest',
+            title: 'zeta-skill',
+            description: 'unrelated topic',
+            body_b64: b64('zeta'),
+          },
+        })
+      ).json()
+    ).id as string;
+    const doc = (
+      await (
+        await call('POST', '/v1/objects', {
+          body: {
+            subtype: 'doc',
+            title: 'beta-doc',
+            description: 'beta content',
+            body_b64: b64('beta'),
+          },
+        })
+      ).json()
+    ).id as string;
+    await call('POST', `/v1/objects/${skill}/refs`, {
+      body: { to_id: doc, role: 'resource' },
+    });
+
+    const r = await call('POST', '/v1/search', {
+      body: { query: 'beta', limit: 10 },
+    });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      items: Array<{
+        id: string;
+        title: string;
+        linkedParent?: { id: string; title: string };
+      }>;
+    };
+    const docHit = body.items.find((h) => h.id === doc);
+    expect(docHit).toBeDefined();
+    expect(docHit?.linkedParent?.id).toBe(skill);
+    expect(docHit?.linkedParent?.title).toBe('zeta-skill');
+  });
 });
 
 describe('error shape — Cross-Service Contract', () => {
