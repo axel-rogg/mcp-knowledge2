@@ -1,8 +1,34 @@
 # PLAN — Multi-User-Readiness für mcp-knowledge2
 
-> **Status:** ⚠️ **Entwurf 2026-05-17** (basierend auf 4-parallelem-Subagent-Audit). Wartet auf User-Review, dann Implementation als zusammenhängender Sprint.
+> **Status:** ✅ **CODE-COMPLETE 2026-05-17** — der Sprint wurde am selben Tag durchgezogen ("alles heute"). Alle 3 Blocker + 3 MUSS + SEC-K-024 deployed. **Operator-Activate-Steps** sind die letzten 3 Schritte (Re-Encrypt-Script, Doppler-Scope-Tokens, REQUIRE_ERASE_RECEIPT-flag) — danach ist KC2 multi-user-tauglich.
 > **Auslöser:** Solo-Pilot heute live; Multi-User-Erweiterung auf 2-5 Family-User geplant. Audit `docs/security/SECURITY_ISSUES.md` identifizierte 3 echte Multi-User-Blocker; Subagent-Review fand 9 zusätzliche Hintertürchen + Test-Gaps.
-> **Geschätzter Aufwand:** **6-9h Code-Sprint** + **30min User-Hand** + **30min Verification**. Realistisch ein Halbtag plus Pufferzeit.
+> **Effort-Result:** geplant 6-9h Code + 30min User-Hand. Real: ~5h Code (von 13:00 bis ~18:00 Sprint-Aktivität), 0min User-Hand bis hier.
+
+## Sprint-Closure-Matrix 2026-05-17
+
+| Block | Finding | Status | Commit |
+|---|---|---|---|
+| §1 | SEC-K-005 Step A (`dek_salt` column) | ✅ | 985d7a5 |
+| §1 | SEC-K-005 Step B (HKDF v2 + Re-Encrypt-Script) | ✅ | f68111d |
+| §2 | SEC-K-009 Service-Token-Split (KC2-Seite) | ✅ | 19b60f8 |
+| §2 | SEC-K-009 Service-Token-Split (approval2-Seite) | ✅ | 9c4813f |
+| §2 | SEC-K-016 Erase-Receipt-JWS (KC2-Seite) | ✅ | 19b60f8 |
+| §2 | SEC-K-016 Erase-Receipt-JWS (approval2-Seite) | ✅ | 9c4813f |
+| §3 | SEC-K-024 Embedding-Salt | ✅ | 6b3ceeb |
+| §4.1.1 | audit-strip 3→9 keys | ✅ | a20ddf4 |
+| §4.1.2 | hardDeleteByOwner JWS-receipt | ✅ | 19b60f8 (REQUIRE_ERASE_RECEIPT-flag) |
+| §4.1.3 | displayName sanitize | ✅ | 43c6682 + 9a0ed02 (lint-fix) |
+| §4.3 | rls.test.ts Erweiterung 9 Tabellen | ✅ | f23bd5a + 91b1786 |
+| **bonus** | SEC-K-NEW share_grants RESTRICTIVE-policy | ✅ | 91b1786 + df2e3a3 (entdeckt durch §4.3 Tests) |
+
+**Operator-Activate-Pending** (User-Hand, nicht Code):
+
+| Step | Wo | Effekt |
+|---|---|---|
+| Service stoppen, `DRY_RUN=1 tsx scripts/re-encrypt-dek-v2.ts`, echt durchziehen, Service hochfahren | KC2 lokal gegen prod-DB | SEC-K-005 Step B aktiviert (existing user v1→v2) |
+| Doppler set `SERVICE_TOKEN_ERASE/SYNC/OPS` (gleiche Werte in KC2 + approval2) | beide Repos | SEC-K-009 aktiviert (scope-binding live) |
+| Doppler set `REQUIRE_ERASE_RECEIPT=true` in KC2; unset legacy `SERVICE_TOKEN` | KC2 | SEC-K-016 enforced, admin-equivalence weg |
+| manuelrogg1 invite-issue | approval2 PWA Admin | Multi-User-Activation |
 
 ## Executive Summary (Layman-Version)
 
