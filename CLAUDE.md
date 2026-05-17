@@ -151,6 +151,17 @@ mcp-knowledge2/
 - `bash scripts/dev.sh` — Postgres + MinIO + Mock-JWKS, dann watch
 - `bash scripts/smoke.sh` — needs JWT from mock-jwks-server
 
+## Branch / Push
+
+- `main` ist Default-Branch
+- Branch-Strategie: direkt auf `main`, kleine atomare Commits
+- **CI-Trigger:**
+  - `ci.yml` läuft auf `push.main` UND auf jedem PR — mit `concurrency: cancel-in-progress` (alte Runs werden bei Folge-Pushes gecancelled).
+  - **Docs-only-Pushes (`**.md` / `docs/**` / `LICENSE` / `.gitignore`) triggern KEINEN CI-Run** (`paths-ignore`-Filter). Spart Testcontainers-Spin + npm-audit + Build-Image-Layer.
+  - `build-image`-Job läuft nur nach grünem `test`-Job UND nur bei `push.main` — pusht GHCR-Image für jeden Code-Commit. (Anders als approval2: hier kein `[deploy]`-Tag-Gate, weil CR-Deploy `workflow_dispatch`-only ist und das Image für lokale/manuelle Pulls auch ohne Deploy nützlich bleibt.)
+- **Deploy (Cloud Run):** `deploy.yml` ist `workflow_dispatch`-only. `[deploy]`-Tag in Commit-Subject ist Konvention für künftige automatische Pipelines (z.B. wenn Cloud-Run-Auto-Deploy aktiviert wird) — analog zum Schwester-Repo mcp-approval2.
+- Co-Authored-By-Footer für Claude-generierte Commits
+
 ## Konventionen
 
 - Plan-Files haben Status-Banner oben (✅ live / ⚠️ Spec / ⚠️ Draft)

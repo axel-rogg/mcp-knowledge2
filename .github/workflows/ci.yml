@@ -1,10 +1,30 @@
 name: ci
 
+# Trigger-Konvention (siehe CLAUDE.md "Branch / Push"):
+# - push.main bei Code-Aenderungen
+# - pull_request gegen main
+# Docs-only-Pushes (*.md / docs/**) triggern KEINEN Run — paths-ignore unten.
+# Bei schnellen Folge-Pushes werden laufende Runs gecancelled (concurrency).
+
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
