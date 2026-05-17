@@ -49,6 +49,21 @@ export async function provisionFromGoogleLogin(login: GoogleLogin): Promise<User
       if (existing.status !== 'active') {
         throw errForbidden(`user account is ${existing.status}`);
       }
+      // SEC-K-017: Admin-Row-Auto-Claim guard. Wenn die existing-Row noch
+      // keinen googleSub hat (z.B. via approval2-Sync ohne google-Login
+      // angelegt) UND `role='admin'`, könnte sich Mallorys Google-Login mit
+      // der Admin-Email die Admin-Rolle "claimen". Block: nur BOOTSTRAP_ADMIN_EMAIL
+      // darf eine ungesyncte Admin-Row claimen (explicit Bootstrap).
+      if (existing.googleSub === null && existing.role === 'admin') {
+        const env2 = loadEnv();
+        if (env2.BOOTSTRAP_ADMIN_EMAIL !== login.email.toLowerCase()) {
+          logger.warn(
+            { kcUserId: existing.id, email: existing.email },
+            'admin-row-claim refused — email matches but BOOTSTRAP_ADMIN_EMAIL does not',
+          );
+          throw errForbidden('admin row needs explicit claim — set BOOTSTRAP_ADMIN_EMAIL or downgrade row to member');
+        }
+      }
       const patch: Partial<UserRow> = { lastSeenAt: nowMs() };
       if (!existing.googleSub) patch.googleSub = login.sub;
       if (login.displayName && !existing.displayName) patch.displayName = login.displayName;

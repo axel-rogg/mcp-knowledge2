@@ -62,7 +62,19 @@ export async function runBackup(): Promise<void> {
   const targetKey = `backup/${ts}.dump.enc`;
 
   // 1. pg_dump --format=custom — emit binary on stdout
-  const pgDump = spawn('pg_dump', ['--format=custom', '--no-owner', env.DATABASE_ADMIN_URL]);
+  //
+  // SEC-K-022: DATABASE_ADMIN_URL enthält BYPASSRLS-Password in der URI.
+  // Wenn als argv übergeben → sichtbar in `/proc/<pid>/cmdline` für jeden
+  // Prozess im selben VM-Namespace (Fly machines sind heute single-tenant,
+  // aber das ist Sloppy + fragile). Fix: URL ohne Password als argv,
+  // PGPASSWORD via env. Parsen der URL für libpq-äquivalente Params.
+  const url = new URL(env.DATABASE_ADMIN_URL);
+  const pgPassword = decodeURIComponent(url.password);
+  // URL ohne Credentials — pg_dump akzeptiert connstring ohne pw
+  const sanitizedUrl = `postgresql://${url.username}@${url.host}${url.pathname}${url.search}`;
+  const pgDump = spawn('pg_dump', ['--format=custom', '--no-owner', sanitizedUrl], {
+    env: { ...process.env, PGPASSWORD: pgPassword },
+  });
   const chunks: Buffer[] = [];
   pgDump.stdout.on('data', (c: Buffer) => chunks.push(c));
   // F-20: trace (not debug) — pg_dump verbose stderr lists table names and

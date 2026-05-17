@@ -162,6 +162,10 @@ export async function createObject(input: CreateObjectInput): Promise<ObjectView
     bodyInline = cipher.ciphertext;
   } else {
     blobKey = `${R2_PREFIX}${id}`;
+    // SEC-K-026: defense-in-depth — assert blobKey-Shape vor put. id ist
+    // UUID via Schema-Default, aber falls Wrapper künftig id aus Request-
+    // Body uebernehmen ohne UUID-Check waere das Path-Traversal-Risk.
+    assertBlobKeyShape(blobKey, 'createObject');
     await blobStore().put(blobKey, cipher.ciphertext, { contentType: 'application/octet-stream' });
   }
 
@@ -305,6 +309,21 @@ export async function readObject(
     const view = rowToView(row);
     if (!opts.includeBody) return { view };
 
+    // SEC-K-025: include_body=true lädt komplette Ciphertext + plaintext in
+    // RAM. Auf shared-cpu-1x (512 MB) ist alles > paar MB OOM-Risk. 1 MB
+    // ist großzügig für Text-Objects (~250 Seiten Markdown), kappt aber
+    // mediafile-OOM. Bei größeren Bodies → presign_get-Pfad nutzen
+    // (Future, siehe Audit-Empfehlung).
+    const INCLUDE_BODY_MAX_BYTES = 1024 * 1024; // 1 MB
+    if (row.bodySize > INCLUDE_BODY_MAX_BYTES) {
+      throw new AppError(
+        413,
+        'https://problems.knowledge2/body-too-large-for-include',
+        `body size ${row.bodySize} exceeds include_body limit ${INCLUDE_BODY_MAX_BYTES} — fetch via presign_get`,
+        { body_size: row.bodySize, limit: INCLUDE_BODY_MAX_BYTES },
+      );
+    }
+
     // F-1: per-user-DEK + AAD-binding to row.ownerId means only the
     // owner can decrypt the body. RLS already lets a shared user see
     // the metadata row, but the body cipher is encrypted under the
@@ -406,6 +425,8 @@ export async function updateObject(id: string, input: UpdateObjectInput): Promis
         updates.blobKey = null;
       } else {
         const blobKey = `${R2_PREFIX}${id}`;
+        // SEC-K-026: defense-in-depth — analog createObject.
+        assertBlobKeyShape(blobKey, 'updateObject');
         await blobStore().put(blobKey, cipher.ciphertext);
         updates.blobKey = blobKey;
         updates.bodyInline = null;

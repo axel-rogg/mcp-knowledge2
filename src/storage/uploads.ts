@@ -20,7 +20,11 @@ import { kms } from '../adapters/kms/index.ts';
 
 // F-16: keep the presigned-PUT window short. Long uploads should chunk.
 const UPLOAD_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
+// SEC-K-014: 5 GB war zu großzügig — finalize lädt den ganzen Blob in V8-Heap
+// für encrypt-in-place. Auf shared-cpu-1x mit 512 MB RAM kann ein bad-actor
+// damit die Instance OOM-killen. 64 MB ist generös für realistic Docs/Bilder,
+// kappt aber das Damage auf manageable. Streaming-Pipeline ist Future-Work.
+const MAX_UPLOAD_BYTES = 64 * 1024 * 1024; // 64 MB
 
 export interface InitUploadInput {
   contentType?: string;
