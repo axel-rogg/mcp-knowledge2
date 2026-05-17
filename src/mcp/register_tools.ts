@@ -21,6 +21,7 @@ import {
 } from '../storage/objects.ts';
 import {
   addRef,
+  expandOutgoingRefBodies,
   listIncomingRefs,
   listOutgoingRefs,
   listRefsForObject,
@@ -166,6 +167,12 @@ export function registerAllTools(): void {
      * (default 5, max 50, set to 0 to suppress refs entirely).
      */
     refs_limit: z.number().int().min(0).max(50).optional(),
+    /**
+     * PLAN-document-linking §9 P9: eager-embed bodies of outgoing refs whose
+     * role is in this array (e.g. ['resource'] for skill-bundle reads).
+     * Greedy 200 KB budget across all expanded bodies; per-ref 1 MB cap.
+     */
+    include_bodies: z.array(z.string().min(1).max(64)).max(4).optional(),
   });
   registerTool({
     name: 'objects.get',
@@ -175,7 +182,10 @@ export function registerAllTools(): void {
       '`references` (see-also, load only if query-relevant), ' +
       '`depends_on` (functional prerequisite — load before executing). ' +
       'Use `refs.outgoing[].uri` (kc://object/...) for follow-up `objects.get` calls. ' +
-      'include_body=true returns the decrypted body (base64).',
+      'include_body=true returns the decrypted body (base64). ' +
+      'include_bodies=["resource"] eagerly embeds outgoing-ref bodies for the listed roles ' +
+      '(useful for skill-bundle reads — fetches all attached resources in one call, ' +
+      'subject to 200 KB total + 1 MB per-ref budget).',
     inputSchema: zodToJsonSchema(GetInput),
     annotations: {
       title: 'Get object',
@@ -184,10 +194,14 @@ export function registerAllTools(): void {
       wysiwys: { display_template: 'Read object {{id}}' },
     },
     handler: async (args) => {
-      const { id, include_body, refs_limit } = GetInput.parse(args);
+      const { id, include_body, refs_limit, include_bodies } = GetInput.parse(args);
       const limit = refs_limit ?? 5;
       const r = await readObject(id, { includeBody: include_body ?? false });
-      const refs = limit > 0 ? await listRefsForObject(id, limit) : undefined;
+      let refs = limit > 0 ? await listRefsForObject(id, limit) : undefined;
+      if (refs && include_bodies && include_bodies.length > 0) {
+        const expanded = await expandOutgoingRefBodies(refs.outgoing, include_bodies);
+        refs = { ...refs, outgoing: expanded };
+      }
       await emitAudit({ action: 'object.read', resourceId: id, result: 'success' });
       return objectWithRefsResult({
         ...r.view,

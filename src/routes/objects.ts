@@ -12,6 +12,7 @@ import {
 } from '../storage/objects.ts';
 import {
   addRef,
+  expandOutgoingRefBodies,
   listIncomingRefs,
   listOutgoingRefs,
   listRefsForObject,
@@ -152,9 +153,21 @@ export const objectsRouter = new Hono()
     if (!Number.isFinite(refsLimit) || refsLimit < 0 || refsLimit > 50) {
       throw errBadRequest('refs_limit must be between 0 and 50');
     }
+    // PLAN-doc-linking §9 P9: eager-embed outgoing-ref bodies for roles
+    // matching the CSV in `?include_bodies=resource,depends_on`. Greedy
+    // 200 KB budget; per-ref 1 MB cap.
+    const includeBodiesRaw = c.req.query('include_bodies');
+    const includeBodyRoles: ReadonlyArray<string> =
+      includeBodiesRaw && includeBodiesRaw.length > 0
+        ? includeBodiesRaw.split(',').map((s) => s.trim()).filter(Boolean)
+        : [];
     try {
       const r = await readObject(id, { includeBody });
-      const refs = refsLimit > 0 ? await listRefsForObject(id, refsLimit) : null;
+      let refs = refsLimit > 0 ? await listRefsForObject(id, refsLimit) : null;
+      if (refs !== null && includeBodyRoles.length > 0) {
+        const expanded = await expandOutgoingRefBodies(refs.outgoing, includeBodyRoles);
+        refs = { ...refs, outgoing: expanded };
+      }
       await emitAudit({ action: 'object.read', resourceId: id, result: 'success' });
       return c.json({
         ...r.view,

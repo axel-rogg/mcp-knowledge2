@@ -39,6 +39,26 @@ export interface RefsForObject {
   truncated: { outgoing: boolean; incoming: boolean };
 }
 
+/**
+ * PLAN-document-linking §9 P9: eager-embed mode for refs.
+ *
+ * Caller passes `roles` (e.g. `['resource']`) — for matching outgoing refs
+ * the body is fetched and base64-encoded inline. Cap-Strategie:
+ *   - per-ref MAX_BYTES_PER_REF = 1 MB (= readObject's INCLUDE_BODY_MAX_BYTES)
+ *   - summed budget DEFAULT_BUDGET_BYTES = 200 KB across all expanded bodies
+ *   - body_size pre-checked via batched objects-query, no R2/decrypt-waste
+ *
+ * Body-Expansion-Marker:
+ *   - body, bodyEncoding='base64' → eager-loaded
+ *   - truncatedReason='oversized' → ref skipped (single ref > 1 MB)
+ *   - truncatedReason='budget'    → ref skipped (cumulative > budget)
+ */
+export interface ExpandedRefView extends RefView {
+  body?: string;
+  bodyEncoding?: 'base64';
+  truncatedReason?: 'oversized' | 'budget';
+}
+
 const DEFAULT_REFS_LIMIT = 5;
 const MAX_REFS_LIMIT = 50;
 
@@ -302,6 +322,82 @@ export async function listRefsForObject(
       },
     };
   });
+}
+
+/**
+ * expandOutgoingRefBodies — eagerly attach `body` (base64) to outgoing refs
+ * whose role is in `roles`. Greedy fill up to `budgetBytes`. Refs over
+ * `perRefMaxBytes` skipped with `truncatedReason='oversized'`.
+ *
+ * Called from `objects.get` handler when `include_bodies` query-param is
+ * present. Pre-checks body_size via batched query, then re-uses `readObject`
+ * for the actual decrypt-loop.
+ */
+const DEFAULT_BUDGET_BYTES = 200 * 1024; // 200 KB
+const PER_REF_MAX_BYTES = 1024 * 1024; // 1 MB — matches readObject's cap
+
+export async function expandOutgoingRefBodies(
+  refs: RefView[],
+  roles: ReadonlyArray<string>,
+  budgetBytes: number = DEFAULT_BUDGET_BYTES,
+): Promise<ExpandedRefView[]> {
+  if (refs.length === 0 || roles.length === 0) {
+    return refs.map((r) => ({ ...r }) as ExpandedRefView);
+  }
+  const ctx = requireContext();
+  if (!ctx.userId) throw errBadRequest('user context required');
+
+  // batched body_size lookup
+  const targetIds = refs.filter((r) => roles.includes(r.role)).map((r) => r.id);
+  if (targetIds.length === 0) {
+    return refs.map((r) => ({ ...r }) as ExpandedRefView);
+  }
+
+  const sizes = await withUserTx(ctx.userId, ctx.requestId, async (db) => {
+    return await db
+      .select({ id: objects.id, bodySize: objects.bodySize })
+      .from(objects)
+      .where(inArray(objects.id, targetIds));
+  });
+  const sizeById = new Map(sizes.map((r) => [r.id, r.bodySize]));
+
+  // Import readObject lazily to avoid circular dep with storage/objects.ts.
+  const { readObject } = await import('./objects.ts');
+
+  let used = 0;
+  const out: ExpandedRefView[] = [];
+  for (const ref of refs) {
+    if (!roles.includes(ref.role)) {
+      out.push({ ...ref });
+      continue;
+    }
+    const size = sizeById.get(ref.id) ?? 0;
+    if (size > PER_REF_MAX_BYTES) {
+      out.push({ ...ref, truncatedReason: 'oversized' });
+      continue;
+    }
+    if (used + size > budgetBytes) {
+      out.push({ ...ref, truncatedReason: 'budget' });
+      continue;
+    }
+    try {
+      const r = await readObject(ref.id, { includeBody: true });
+      if (r.body !== undefined) {
+        out.push({
+          ...ref,
+          body: Buffer.from(r.body).toString('base64'),
+          bodyEncoding: 'base64',
+        });
+        used += size;
+      } else {
+        out.push({ ...ref });
+      }
+    } catch {
+      // shared-body-not-implemented, decrypt-fail, etc. → skip silently
+      out.push({ ...ref });
+    }
+  }
+  return out;
 }
 
 /**
