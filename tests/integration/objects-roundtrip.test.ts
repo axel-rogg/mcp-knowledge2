@@ -569,7 +569,13 @@ describe('internal — erase-user', () => {
 
     const r = await app.request('http://test/v1/internal/erase-user', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        // SEC-K-009: scope-specific service-token middleware now lives on
+        // the route. Test-env keeps only legacy SERVICE_TOKEN; the
+        // middleware falls back to it when SERVICE_TOKEN_ERASE is unset.
+        authorization: `Bearer ${process.env.SERVICE_TOKEN}`,
+      },
       body: JSON.stringify({
         user_id: USER_A,
         confirmation_token: 'token-with-sufficient-length-1234567',
