@@ -129,7 +129,15 @@ export async function hybridSearch(input: HybridSearchInput): Promise<HybridSear
       // Same OR-joined subtype-clause but prefixed against `o.` alias.
       const vecSubtypeClause = ((): ReturnType<typeof sql> => {
         const branches: ReturnType<typeof sql>[] = [];
-        if (subtypeFilter) branches.push(sql`o.subtype = ANY(${subtypeFilter})`);
+        if (subtypeFilter) {
+          // Siehe FTS-Branch — sql`...ANY(${arr})` expandiert zu Tuple-Syntax.
+          // sql.join + IN ist die saubere drizzle-Variante.
+          const list = sql.join(
+            subtypeFilter.map((s) => sql`${s}`),
+            sql`, `,
+          );
+          branches.push(sql`o.subtype IN (${list})`);
+        }
         if (prefixFilter) {
           for (const p of prefixFilter) {
             branches.push(sql`o.subtype LIKE ${p + '%'}`);
