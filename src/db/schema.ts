@@ -2,6 +2,7 @@
 // Single-tenant: no tenant_id columns. owner_id is the user-scope.
 // Timestamps are stored as INTEGER (Unix ms) per the v1 decision.
 
+import { randomBytes as randomBytesSync } from 'node:crypto';
 import {
   bigint,
   boolean,
@@ -262,6 +263,25 @@ export const users = pgTable('users', {
   // auf Email-Match angewiesen ist. Bei Mismatch (Email gleich, external_id
   // verschieden) → refuse Sync-Update. Migration 0012.
   externalId: text('external_id'),
+  // SEC-K-005: per-user random salt (32 bytes) für HKDF, gemischt in den
+  // DEK-derivation-Pfad. Master-Leak + public-userId reicht nicht mehr für
+  // DEK-Recovery — dek_salt muss aus DB. Migration 0015. DB-default
+  // (gen_random_bytes(32)) füllt das Feld auf Insert; $defaultFn ist
+  // Client-side-Fallback wenn Tests ohne DB-default arbeiten.
+  dekSalt: customType<{ data: Uint8Array; driverData: Buffer }>({
+    dataType() {
+      return 'bytea';
+    },
+    toDriver(v) {
+      return Buffer.from(v);
+    },
+    fromDriver(v) {
+      return new Uint8Array(v as Buffer);
+    },
+  })('dek_salt')
+    .notNull()
+    .$defaultFn(() => new Uint8Array(randomBytesSync(32))),
+  dekSaltVersion: integer('dek_salt_version').notNull().default(1),
 });
 
 export const invites = pgTable('invites', {
