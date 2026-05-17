@@ -34,6 +34,12 @@ process.env.BLOB_BUCKET = 'test';
 process.env.VERTEX_PROJECT = 'test-project';
 process.env.MCP_APPROVAL_BASE_URL = 'http://127.0.0.1:1';
 process.env.MCP_APPROVAL_INTERNAL_TOKEN = 'test-internal-token-must-be-32-bytes-or-more-x';
+// AS-3-Schema in env.ts hat SELF_OAUTH_ISSUER + GOOGLE_OAUTH_* als Required
+// (post-K3/K4 OAuth-Facade). Stubs reichen — kein OAuth-Flow im Integration-Test.
+process.env.SELF_OAUTH_ISSUER = 'http://127.0.0.1:1';
+process.env.GOOGLE_OAUTH_CLIENT_ID = 'test-google-client-id';
+process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'test-google-client-secret';
+process.env.GOOGLE_OAUTH_REDIRECT_URI = 'http://127.0.0.1:1/auth/google/callback';
 // 32 zero-bytes base64 — matches the F-21 validator which now requires
 // BACKUP_MASTER_KEY to decode to exactly 32 raw bytes.
 process.env.BACKUP_MASTER_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
