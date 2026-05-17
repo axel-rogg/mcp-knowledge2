@@ -16,6 +16,7 @@ import { invites, users } from '../db/schema.ts';
 import { errForbidden, errNotFound } from '../lib/errors.ts';
 import { logger } from '../lib/logger.ts';
 import { nowMs } from '../lib/ids.ts';
+import { loadEnv } from '../types/env.ts';
 import type { InviteRow, UserRow } from '../db/schema.ts';
 
 export interface GoogleLogin {
@@ -57,8 +58,21 @@ export async function provisionFromGoogleLogin(login: GoogleLogin): Promise<User
     }
 
     // No existing user. Check the invite-or-bootstrap rule.
+    //
+    // SEC-K-003: Bootstrap-Admin ist NUR der explizit konfigurierte
+    // BOOTSTRAP_ADMIN_EMAIL — nicht mehr "wer als erstes einloggt". Wenn die
+    // env leer ist, fallback auf den klassischen first-login-Pfad (für
+    // Dev/Test). In production-Boot greift assertProductionAuthGuards
+    // bereits gegen "nichts konfiguriert".
+    const env = loadEnv();
     const userCountRows = await db.select({ id: users.id }).from(users).limit(1);
-    const isBootstrap = userCountRows.length === 0;
+    const tableIsEmpty = userCountRows.length === 0;
+    const explicitBootstrap =
+      env.BOOTSTRAP_ADMIN_EMAIL.length > 0 &&
+      env.BOOTSTRAP_ADMIN_EMAIL === login.email.toLowerCase();
+    const isBootstrap =
+      tableIsEmpty &&
+      (env.BOOTSTRAP_ADMIN_EMAIL.length === 0 || explicitBootstrap);
 
     if (!isBootstrap) {
       const inviteRows = await db

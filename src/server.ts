@@ -109,8 +109,31 @@ registerAllTools();
 app.route('/', mcpRouter);
 
 // ─── Bootstrap ─────────────────────────────────────────────────────────────
+
+/**
+ * SEC-K-003 Hardening: in production muss ENTWEDER ALLOWED_EMAILS gesetzt
+ * sein ODER GOOGLE_HD_ALLOWLIST ODER BOOTSTRAP_ADMIN_EMAIL — sonst öffnet
+ * provisionFromGoogleLogin im DCR-Pfad eine first-login-admin-Tür für jede
+ * Google-verifizierte Email. Im Lockdown-Setup heute zwar nicht public
+ * erreichbar, aber defense-in-depth-Boot-Assertion verhindert künftige
+ * Lockdown-Regression-Bugs.
+ */
+function assertProductionAuthGuards(env: ReturnType<typeof loadEnv>): void {
+  if (env.NODE_ENV !== 'production') return;
+  const hasEmailAllowlist = env.ALLOWED_EMAILS.length > 0;
+  const hasHdAllowlist = env.GOOGLE_HD_ALLOWLIST.length > 0;
+  const hasBootstrapEmail = env.BOOTSTRAP_ADMIN_EMAIL.length > 0;
+  if (!hasEmailAllowlist && !hasHdAllowlist && !hasBootstrapEmail) {
+    throw new Error(
+      'SEC-K-003: NODE_ENV=production but auth-guard env unset. ' +
+        'Set at least one of: ALLOWED_EMAILS, GOOGLE_HD_ALLOWLIST, BOOTSTRAP_ADMIN_EMAIL.',
+    );
+  }
+}
+
 async function main() {
   const env = loadEnv();
+  assertProductionAuthGuards(env);
   const port = env.PORT;
   // Start the HTTP listener BEFORE pg-boss boots so /health and /version
   // respond immediately on cold-start. pg-boss.start() can take 1-5s against

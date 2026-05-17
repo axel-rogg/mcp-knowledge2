@@ -71,6 +71,14 @@ const EnvSchema = z.object({
     .string()
     .default('')
     .transform((s) => s.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean)),
+  // SEC-K-003: explicit Bootstrap-Admin-Email statt First-Login-Admin.
+  // Wenn gesetzt: nur dieser Email-User wird beim First-Login zum Admin
+  // (statt "wer als erstes einloggt, ist Admin"). Leer = first-login-admin
+  // path bleibt (für lokale Dev/Test acceptable, prod-Boot-Assert greift dann).
+  BOOTSTRAP_ADMIN_EMAIL: z
+    .string()
+    .default('')
+    .transform((s) => s.trim().toLowerCase()),
   // JWKS-URL fuer Google-OIDC ID-Token-Verify. Allowlist auf Google-Hosts
   // (defense-in-depth: ein leaked Fly-API-Token + Doppler-write koennte
   // sonst auf attacker-controlled JWKS umlenken — SEC-K-002).
