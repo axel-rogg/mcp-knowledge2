@@ -86,8 +86,18 @@ app.route('/', oauthFacadeRouter);
 
 // ─── User-Auth: own JWT OR approval2 OBO (AS-3 K8) ─────────────────────────
 const v1 = new Hono();
-v1.use('*', requireJwtOrOnBehalfOf);
-v1.use('*', installContext);
+// Skip user-auth fuer /internal/* paths — die haben eigene service-token-
+// Middleware in internalRouter. Ohne diesen Skip wuerde requireJwtOrOnBehalfOf
+// vor requireServiceToken laufen und mit "jwt verification failed" 401-en
+// (Service-Tokens sind keine JWTs).
+v1.use('*', async (c, next) => {
+  if (c.req.path.startsWith('/v1/internal/')) return next();
+  return requireJwtOrOnBehalfOf(c, next);
+});
+v1.use('*', async (c, next) => {
+  if (c.req.path.startsWith('/v1/internal/')) return next();
+  return installContext(c, next);
+});
 // SEC-K-018: Per-User-Rate-Limit. 600 req/min/user — generös für legit
 // Workflow (PWA-Prefetch + batched MCP-Calls + Background-Refresh), kappt
 // aber Embedding-Loop-DoS und batched-tools-Burn. Geht NACH context-install
