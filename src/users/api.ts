@@ -66,7 +66,7 @@ export async function provisionFromGoogleLogin(login: GoogleLogin): Promise<User
       }
       const patch: Partial<UserRow> = { lastSeenAt: nowMs() };
       if (!existing.googleSub) patch.googleSub = login.sub;
-      if (login.displayName && !existing.displayName) patch.displayName = login.displayName;
+      if (login.displayName && !existing.displayName) patch.displayName = sanitizeDisplayName(login.displayName);
       if (existing.inviteToken) patch.inviteToken = null;
       await db.update(users).set(patch).where(eq(users.id, existing.id));
       return { ...existing, ...patch };
@@ -105,7 +105,7 @@ export async function provisionFromGoogleLogin(login: GoogleLogin): Promise<User
         .values({
           email: login.email,
           googleSub: login.sub,
-          displayName: login.displayName,
+          displayName: sanitizeDisplayName(login.displayName),
           role: 'member',
           status: 'active',
           createdAt: now,
@@ -127,7 +127,7 @@ export async function provisionFromGoogleLogin(login: GoogleLogin): Promise<User
       .values({
         email: login.email,
         googleSub: login.sub,
-        displayName: login.displayName,
+        displayName: sanitizeDisplayName(login.displayName),
         role: 'admin',
         status: 'active',
         createdAt: now,
@@ -277,6 +277,31 @@ export async function markUserErased(userId: string): Promise<void> {
   });
 }
 
+// ─── displayName sanitization (Multi-User MUSS-§4.1.3) ────────────────────
+//
+// Heute hat KC2 keinen HTML-render-Pfad, aber `display_name` wandert via
+// syncFromApproval2 + provisionFromGoogleLogin in eine plaintext-Spalte.
+// Wenn ein Future-UI (PWA-Side-Panel, Admin-Tool, Audit-Export) das mal
+// rendert, hätten wir Storage-XSS. Plus: weiße Whitespace, NULL-bytes,
+// Control-Chars + sehr lange Strings sind Logging-Spam-Vektoren.
+//
+// Sanitize: control-chars raus (außer normales whitespace), trim, cap auf
+// 100 Zeichen, NULL bei leer. Conservative — wir können das später lockern
+// wenn wir Markdown-Names oder Emojis brauchen.
+
+const DISPLAY_NAME_MAX = 100;
+function sanitizeDisplayName(raw: string | null | undefined): string | null {
+  if (raw === null || raw === undefined) return null;
+  // Strip control chars (Cc category, U+0000-U+001F + U+007F-U+009F).
+  // eslint-disable-next-line no-control-regex
+  const stripped = raw.replace(/[\x00-\x1F\x7F-\x9F]/g, '');
+  const trimmed = stripped.trim();
+  if (trimmed.length === 0) return null;
+  return trimmed.length > DISPLAY_NAME_MAX
+    ? trimmed.slice(0, DISPLAY_NAME_MAX)
+    : trimmed;
+}
+
 // ─── User-Sync from approval2 (AS-3 A11 ↔ K-side) ─────────────────────────
 
 export interface UserSyncInput {
@@ -320,7 +345,7 @@ export async function syncFromApproval2(input: UserSyncInput): Promise<UserSyncO
         .insert(users)
         .values({
           email: input.email,
-          displayName: input.displayName,
+          displayName: sanitizeDisplayName(input.displayName),
           role: 'member',
           status: input.status,
           createdAt: now,
@@ -382,7 +407,7 @@ export async function syncFromApproval2(input: UserSyncInput): Promise<UserSyncO
     const patch: Partial<UserRow> = {};
     if (existing.status !== input.status) patch.status = input.status;
     if ((existing.displayName ?? null) !== (input.displayName ?? null)) {
-      patch.displayName = input.displayName;
+      patch.displayName = sanitizeDisplayName(input.displayName);
     }
     // SEC-K-006: external_id-Backfill — wenn existing.externalId NULL (Bootstrap-
     // Admin oder Pre-Migration-Row) und input liefert eine ID: write-through.
