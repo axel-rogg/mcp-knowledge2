@@ -18,15 +18,25 @@ import {
   shareGrants,
   uploads,
 } from '../db/schema.ts';
-import { blobStore } from '../adapters/blob/s3.ts';
+import { blobStore } from '../adapters/blob/index.ts';
 import { emitAudit } from '../observability/audit.ts';
 import { errBadRequest } from '../lib/errors.ts';
 import { logger } from '../lib/logger.ts';
 import { nowMs } from '../lib/ids.ts';
+import { syncFromApproval2 } from '../users/api.ts';
+import type { UserSyncInput } from '../users/api.ts';
 
 const EraseBody = z.object({
   user_id: z.string().uuid(),
   confirmation_token: z.string().min(16),
+});
+
+const UserSyncBody = z.object({
+  user_id: z.string().uuid(),
+  email: z.string().email(),
+  display_name: z.union([z.string(), z.null()]).optional(),
+  status: z.enum(['active', 'suspended', 'erased']),
+  external_id: z.string().optional(),
 });
 
 export const internalRouter = new Hono()
@@ -126,7 +136,6 @@ export const internalRouter = new Hono()
     // F-8: audit result reflects whether anything is still pending.
     await emitAudit({
       action: 'user.erased',
-      resourceKind: 'system',
       resourceId: userId,
       result: stillPending.length === 0 ? 'success' : 'error',
       details: {
@@ -152,6 +161,34 @@ export const internalRouter = new Hono()
         blobs_pending: stillPending.length,
       },
     });
+  })
+  .post('/internal/users/sync', async (c) => {
+    // AS-3 §2.2 + A11: approval2 push-syncs user-state to KC2 on
+    // create/suspend/erase. Idempotent — returns `unchanged` when the
+    // payload matches the current row.
+    const body = UserSyncBody.parse(await c.req.json());
+    const syncInput: UserSyncInput = {
+      approval2UserId: body.user_id,
+      email: body.email,
+      displayName: body.display_name ?? null,
+      status: body.status,
+    };
+    if (body.external_id !== undefined) {
+      (syncInput as { externalId?: string }).externalId = body.external_id;
+    }
+    const result = await syncFromApproval2(syncInput);
+    await emitAudit({
+      action: 'user.synced',
+      resourceId: result.kcUserId,
+      result: 'success',
+      details: {
+        upstream_status: result.status,
+        approval2_user_id: body.user_id,
+        email: body.email,
+        status: body.status,
+      },
+    });
+    return c.json({ status: result.status, kc_user_id: result.kcUserId });
   })
   .post('/internal/health-deep', async (c) => {
     const checks: Record<string, { status: 'ok' | 'error'; detail?: string }> = {};

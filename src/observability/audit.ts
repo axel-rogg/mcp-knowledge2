@@ -19,11 +19,12 @@ export async function emitAudit(event: AuditEventInput): Promise<void> {
           ts: nowMs(),
           actorUserId: '00000000-0000-0000-0000-000000000000',
           action: event.action,
-          resourceKind: event.resourceKind ?? null,
           resourceId: event.resourceId ?? null,
           requestId: ctx.requestId,
           result: event.result,
           details: event.details ?? null,
+          viaProxy: ctx.viaProxy ?? false,
+          approvalId: ctx.approvalId ?? null,
         });
       });
       return;
@@ -33,11 +34,12 @@ export async function emitAudit(event: AuditEventInput): Promise<void> {
         ts: nowMs(),
         actorUserId: ctx.userId!,
         action: event.action,
-        resourceKind: event.resourceKind ?? null,
         resourceId: event.resourceId ?? null,
         requestId: ctx.requestId,
         result: event.result,
         details: event.details ?? null,
+        viaProxy: ctx.viaProxy ?? false,
+        approvalId: ctx.approvalId ?? null,
       });
     });
   } catch (e) {

@@ -12,8 +12,11 @@ external S3-compatible provider (Backblaze B2, Cloudflare R2).
 - DNS A record pointing `knowledge.firma.invalid` to your VPS public IP
 - A pre-built image at `ghcr.io/axel-rogg/mcp-knowledge2:<tag>` (CI builds
   on every push to `main`)
-- mcp-approval2 already deployed with a public JWKS endpoint
-- `vertex-sa.json` (service account JSON for Vertex AI) stored locally
+- mcp-approval2 already deployed with a public JWKS endpoint (pre-AS-3 path) —
+  oder KC2 autonom mit eigener OAuth-Facade (AS-3-Code-Complete-Pfad)
+- Embedding-Provider gewählt: **`EMBED_PROVIDER=cloudflare`** (Default,
+  Workers AI + AI Gateway — keine GCP-Creds nötig) ODER `vertex` (Legacy-
+  Fallback — dann `vertex-sa.json` lokal vorbereiten)
 - All secret values generated:
   - `DB_ROOT_PASSWORD`, `DB_APP_PASSWORD`, `DB_ADMIN_PASSWORD`
   - `SERVICE_TOKEN` (32 random bytes hex)
@@ -32,7 +35,9 @@ external S3-compatible provider (Backblaze B2, Cloudflare R2).
    cd /opt/mcp-knowledge2
    git clone --depth=1 https://github.com/axel-rogg/mcp-knowledge2.git .
    ```
-4. **Place the Vertex service-account JSON**:
+4. **Optional — only if `EMBED_PROVIDER=vertex`** — place the Vertex
+   service-account JSON. For the default `cloudflare` provider this step
+   is skipped (token comes from Doppler, no file needed):
    ```bash
    scp vertex-sa.json root@<vps>:/opt/mcp-knowledge2/secrets/vertex-sa.json
    chmod 600 secrets/vertex-sa.json
@@ -113,7 +118,11 @@ docker compose -f deployments/docker-compose.yml --env-file .env up -d --no-deps
   validation errors (Zod prints the offending key and reason).
 - **`/health/ready` returns 503** → check the `checks` field; it lists
   which dependency is down (db, blob).
-- **Vertex calls fail** → check the service-account JSON is mounted
+- **Embedding calls fail** (default Cloudflare provider) → verify
+  `CLOUDFLARE_API_TOKEN` Permissions im CF Dashboard (Workers AI Read +
+  AI Gateway Run), und `CLOUDFLARE_AI_GATEWAY_ID` matched einen existing
+  Gateway. Probe via `curl https://api.cloudflare.com/client/v4/accounts/<acc>/ai/run/@cf/baai/bge-m3 -d '{"text":["test"]}'`.
+- **Vertex calls fail** (`EMBED_PROVIDER=vertex`) → check the service-account JSON is mounted
   (`docker compose exec app ls /etc/secrets/`) and Vertex API is
   enabled in the GCP project.
 - **JWKS unreachable** → mcp-approval2 must expose

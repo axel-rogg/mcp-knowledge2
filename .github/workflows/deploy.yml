@@ -1,10 +1,25 @@
 name: deploy
 
 # Manual-only until GCP_WIF_PROVIDER + GCP_DEPLOY_SA + GCP_PROJECT + related
-# secrets are configured in the repo. Once they're set, an additional
-# trigger can be added (e.g. push tag 'v*' or push with '[deploy]' marker).
+# inputs are configured in the repo. Once they're set, an additional trigger
+# can be added (e.g. push tag 'v*' or push with '[deploy]' marker).
+#
+# Secrets convention: GCP-side secrets live in Secret Manager, synced from
+# Doppler via `bash deploy/gcp/sync-secrets.sh`. This workflow never reads
+# plaintext credentials — it only resolves placeholders and runs gcloud.
 on:
   workflow_dispatch:
+    inputs:
+      sql_instance_connection:
+        description: "Cloud SQL connection name (PROJECT:REGION:INSTANCE)"
+        required: true
+      domain:
+        description: "Public hostname for SELF_OAUTH_ISSUER (e.g. knowledge.example.com)"
+        required: true
+      region:
+        description: "GCP region"
+        required: true
+        default: "europe-west4"
 
 jobs:
   cloud-run:
@@ -12,32 +27,62 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      REGION: ${{ inputs.region }}
+      SQL_INST: ${{ inputs.sql_instance_connection }}
+      DOMAIN: ${{ inputs.domain }}
+      PROJECT: ${{ secrets.GCP_PROJECT }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: build & push image
+        id: build
         run: |
           gcloud auth configure-docker europe-docker.pkg.dev --quiet
-          IMAGE=europe-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/containers/mcp-knowledge2:${{ github.sha }}
-          docker build -t "$IMAGE" .
+          IMAGE=europe-docker.pkg.dev/${PROJECT}/containers/mcp-knowledge2:${GITHUB_SHA}
+          docker build \
+            --build-arg "BUILD_SHA=${GITHUB_SHA}" \
+            -t "$IMAGE" .
           docker push "$IMAGE"
-          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      - name: apply migrations
+      - name: apply migrations via Cloud Run Job
         env:
-          DATABASE_ADMIN_URL: ${{ secrets.PROD_DATABASE_ADMIN_URL }}
+          IMAGE: ${{ steps.build.outputs.image }}
         run: |
-          npm ci
-          npm run db:migrate
+          set -euo pipefail
+          sed \
+            -e "s|__PROJECT__|${PROJECT}|g" \
+            -e "s|__REGION__|${REGION}|g" \
+            -e "s|__SQL_INST__|${SQL_INST}|g" \
+            -e "s|__IMAGE__|${IMAGE}|g" \
+            deployments/cloud-run/migrate-job.yaml > /tmp/migrate-job.yaml
+
+          # Replace the job (creates if missing) — picks up the new image.
+          gcloud run jobs replace /tmp/migrate-job.yaml --region="${REGION}"
+
+          # Execute and block until done. Non-zero exit fails the workflow.
+          gcloud run jobs execute migrate-knowledge2 \
+            --region="${REGION}" \
+            --wait
 
       - name: deploy to cloud-run
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
         run: |
-          sed "s|europe-docker.pkg.dev/PROJECT/containers/mcp-knowledge2:LATEST|${{ env.IMAGE }}|g" \
+          set -euo pipefail
+          sed \
+            -e "s|__PROJECT__|${PROJECT}|g" \
+            -e "s|__REGION__|${REGION}|g" \
+            -e "s|__SQL_INST__|${SQL_INST}|g" \
+            -e "s|__DOMAIN__|${DOMAIN}|g" \
+            -e "s|__IMAGE__|${IMAGE}|g" \
             deployments/cloud-run/service.yaml > /tmp/service.yaml
-          gcloud run services replace /tmp/service.yaml \
-            --region=europe-west4
+          gcloud run services replace /tmp/service.yaml --region="${REGION}"

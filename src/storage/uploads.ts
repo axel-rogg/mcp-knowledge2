@@ -11,12 +11,12 @@ import { uploads, type UploadRow } from '../db/schema.ts';
 import { withUserTx } from '../db/client.ts';
 import { requireContext } from '../lib/context.ts';
 import { errBadRequest, errNotFound } from '../lib/errors.ts';
-import { blobStore } from '../adapters/blob/s3.ts';
+import { blobStore } from '../adapters/blob/index.ts';
 import { uuidV4, nowMs } from '../lib/ids.ts';
 import { buildAad } from '../lib/crypto/aad.ts';
 import { encrypt, importKey } from '../lib/crypto/aes_gcm.ts';
 import { serializeBlob } from '../lib/crypto/serialize.ts';
-import { kms } from '../adapters/kms/internal_api.ts';
+import { kms } from '../adapters/kms/index.ts';
 
 // F-16: keep the presigned-PUT window short. Long uploads should chunk.
 const UPLOAD_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -121,8 +121,6 @@ export async function finalizeUpload(id: string): Promise<UploadStatus> {
     recordType: 'objects',
     ownerId: ctx.userId,
     objectId: id, // upload_id doubles as AAD object-id slot
-    kind: 'memo',
-    subtype: 'upload-finalized',
   });
   const cipher = await encrypt(key, plain, aad);
   const sealed = serializeBlob(cipher);

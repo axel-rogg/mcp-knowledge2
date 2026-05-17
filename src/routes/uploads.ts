@@ -15,7 +15,7 @@ export const uploadsRouter = new Hono()
       ...(b.content_type !== undefined ? { contentType: b.content_type } : {}),
       ...(b.meta !== undefined ? { meta: b.meta } : {}),
     });
-    await emitAudit({ action: 'upload.init', resourceKind: 'upload', resourceId: out.uploadId, result: 'success' });
+    await emitAudit({ action: 'upload.init', resourceId: out.uploadId, result: 'success' });
     return c.json({
       upload_id: out.uploadId,
       presigned_url: out.presignedUrl,
@@ -25,7 +25,7 @@ export const uploadsRouter = new Hono()
   .post('/uploads/:id/finalize', async (c) => {
     const id = c.req.param('id');
     const status = await finalizeUpload(id);
-    await emitAudit({ action: 'upload.finalize', resourceKind: 'upload', resourceId: id, result: 'success' });
+    await emitAudit({ action: 'upload.finalize', resourceId: id, result: 'success' });
     return c.json(status);
   })
   .get('/uploads/:id/status', async (c) => {

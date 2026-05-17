@@ -2,6 +2,11 @@
 
 > **Status: ✅ KONSOLIDIERT in [PLAN-architecture-v2.md](./PLAN-architecture-v2.md) (2026-05-13)**
 >
+> **OBSOLET seit 2026-05-15 — ADR-0004 / GENERIC-DATA-MODEL.md v3 hat das
+> `kind`-Diskriminator-Modell entfernt.** Das `kind`-Column-+-Index-Schema in
+> §§2.1 unten ist veraltet. Authoritative Spec: PLAN-architecture-v2 §2.1
+> (v3-Revision) + GENERIC-DATA-MODEL.md.
+>
 > Dieses DRAFT-File bleibt als Input-Trail. Authoritative Implementation-
 > Spec ist v2. NICHT PUSHEN (lokal-only, war Input für die Konsolidierung).
 >

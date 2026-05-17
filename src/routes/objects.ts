@@ -18,8 +18,6 @@ import { emitAudit } from '../observability/audit.ts';
 import { requireContext } from '../lib/context.ts';
 import { errBadRequest } from '../lib/errors.ts';
 
-const KIND = z.enum(['doc', 'skill', 'app', 'memo']);
-
 // Inline-body cap: 16 KB binary ≈ 22 KB base64. Any larger upload MUST go
 // through the presigned-upload pipeline (POST /v1/uploads/init) so the
 // server is not asked to materialise the entire body in memory from a
@@ -27,9 +25,13 @@ const KIND = z.enum(['doc', 'skill', 'app', 'memo']);
 // JSON-bomb-style RAM exhaustion (F-2 in the 2026-05-13 audit).
 const INLINE_BODY_INPUT_MAX_B64 = 22 * 1024;
 
+// subtype is a free-form caller-convention string post-ADR-0004.
+// Storage interprets nothing; the regex below is just an
+// identifier-shape guard against control characters / injection.
+const SUBTYPE_PATTERN = /^[a-z][a-z0-9_:-]{0,31}$/;
+
 const CreateBody = z.object({
-  kind: KIND,
-  subtype: z.string().max(64).optional(),
+  subtype: z.string().min(1).max(32).regex(SUBTYPE_PATTERN).optional(),
   title: z.string().max(2048).optional(),
   description: z.string().max(8192).optional(),
   keywords: z.array(z.string().max(64)).max(64).optional(),
@@ -83,7 +85,6 @@ export const objectsRouter = new Hono()
 
     try {
       const view = await createObject({
-        kind: body.kind,
         subtype: body.subtype,
         title: body.title,
         description: body.description,
@@ -96,23 +97,36 @@ export const objectsRouter = new Hono()
         visibility: body.visibility,
         embed: body.embed,
       });
-      await emitAudit({ action: 'object.create', resourceKind: body.kind, resourceId: view.id, result: 'success' });
+      await emitAudit({ action: 'object.create', resourceId: view.id, result: 'success' });
       return c.json(view, 201);
     } catch (e) {
       // roll back the quota increment we did optimistically
       await releaseObjectQuota(ctx.userId, ctx.requestId, bodyBytes.byteLength);
-      await emitAudit({ action: 'object.create', resourceKind: body.kind, result: 'error' });
+      await emitAudit({ action: 'object.create', result: 'error' });
       throw e;
     }
   })
   .get('/objects', async (c) => {
-    const kind = c.req.query('kind') as z.infer<typeof KIND> | undefined;
     const subtype = c.req.query('subtype') ?? undefined;
+    const subtypePrefix = c.req.query('subtype_prefix') ?? undefined;
+    // Mutual-exclusive: the caller picks one filter mode. Allowing both
+    // would silently take the precedence we happen to choose here, hiding
+    // intent. Fail explicitly.
+    if (subtype !== undefined && subtypePrefix !== undefined) {
+      throw errBadRequest('subtype and subtype_prefix are mutually exclusive');
+    }
+    // Shape-validate the prefix the same way we validate `subtype` —
+    // identifier-shape, no wildcard characters reach the LIKE clause.
+    if (subtypePrefix !== undefined) {
+      if (!/^[a-z][a-z0-9_:-]{0,30}$/.test(subtypePrefix)) {
+        throw errBadRequest(`invalid subtype_prefix '${subtypePrefix}'`);
+      }
+    }
     const limit = c.req.query('limit') ? Number.parseInt(c.req.query('limit')!, 10) : undefined;
     const cursor = c.req.query('cursor') ? Number.parseInt(c.req.query('cursor')!, 10) : undefined;
     const out = await listObjects({
-      kind: kind && KIND.options.includes(kind) ? kind : undefined,
-      subtype,
+      ...(subtype !== undefined ? { subtype } : {}),
+      ...(subtypePrefix !== undefined ? { subtypePrefix } : {}),
       ...(limit !== undefined ? { limit } : {}),
       ...(cursor !== undefined ? { cursor } : {}),
     });
@@ -123,7 +137,7 @@ export const objectsRouter = new Hono()
     const includeBody = c.req.query('expand')?.split(',').includes('body') ?? false;
     try {
       const r = await readObject(id, { includeBody });
-      await emitAudit({ action: 'object.read', resourceKind: r.view.kind, resourceId: id, result: 'success' });
+      await emitAudit({ action: 'object.read', resourceId: id, result: 'success' });
       return c.json({
         ...r.view,
         body_b64: r.body ? Buffer.from(r.body).toString('base64') : undefined,

@@ -10,7 +10,7 @@
 | Suite                              | File                                              | Notes |
 |------------------------------------|---------------------------------------------------|-------|
 | RLS isolation                      | `tests/integration/rls.test.ts`                   | low-level SQL, hits `pg.Client` directly. Verifies row-level-security policies survive a forgetful application layer. |
-| Adapter-shape roundtrip            | `tests/integration/objects-roundtrip.test.ts`     | spins up the **full Hono server**, calls every endpoint the `mcp-approval2` `KnowledgeAdapter` reaches. Mocks Vertex AI + KMS + blob-store. |
+| Adapter-shape roundtrip            | `tests/integration/objects-roundtrip.test.ts`     | spins up the **full Hono server**, calls every endpoint the `mcp-approval2` `KnowledgeAdapter` reaches. Mocks the embedding adapter (provider-agnostic — works with both Cloudflare Workers AI and Vertex), KMS + blob-store. |
 
 Both suites use [`@testcontainers/postgresql`](https://www.npmjs.com/package/@testcontainers/postgresql)
 with image `pgvector/pgvector:pg16` — pgvector + pgcrypto extensions

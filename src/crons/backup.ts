@@ -4,14 +4,57 @@
 //
 // The backup key is intentionally distinct from per-user DEKs so that a
 // compromise of one user's DEK does not leak the historical backups.
+//
+// Backup-bucket: when env.BACKUP_BUCKET is set (and differs from BLOB_BUCKET),
+// the encrypted dump is uploaded to that bucket instead — lets operators run a
+// separate lifecycle policy (immutable + glacier-tier) on backups.
+//
+// Retention: after every successful upload, the cron lists objects under
+// `backup/` in the target bucket and deletes those older than
+// BACKUP_RETENTION_DAYS (default 30).
 
 import { spawn } from 'node:child_process';
-import { decodeKey, loadEnv } from '../types/env.ts';
-import { blobStore } from '../adapters/blob/s3.ts';
+import {
+  DeleteObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+  type _Object,
+} from '@aws-sdk/client-s3';
+import { decodeKey, loadEnv, type Env } from '../types/env.ts';
 import { encrypt, importKey } from '../lib/crypto/aes_gcm.ts';
 import { serializeBlob } from '../lib/crypto/serialize.ts';
 import { logger } from '../lib/logger.ts';
 import { nowMs } from '../lib/ids.ts';
+
+function backupClient(env: Env): { client: S3Client; bucket: string } {
+  // Backup-Pfad nutzt heute den S3-Endpoint des Blob-Adapters. Wenn der
+  // Operator BLOB_PROVIDER='gcs' fährt, ist hier noch ein separater Schritt
+  // nötig — für GCS-Backup das @google-cloud/storage SDK direkt; im Pilot
+  // nicht implementiert weil pre-pilot.
+  if (env.BLOB_PROVIDER !== 's3') {
+    throw new Error(
+      `backup cron currently only supports BLOB_PROVIDER=s3, got ${env.BLOB_PROVIDER}. ` +
+        'See TODO in crons/backup.ts: add GCS-native backup path before activating cron.',
+    );
+  }
+  if (!env.BLOB_ENDPOINT || !env.BLOB_ACCESS_KEY || !env.BLOB_SECRET_KEY) {
+    throw new Error(
+      'backup cron requires BLOB_ENDPOINT + BLOB_ACCESS_KEY + BLOB_SECRET_KEY (s3 path)',
+    );
+  }
+  const client = new S3Client({
+    region: env.BLOB_REGION,
+    endpoint: env.BLOB_ENDPOINT,
+    forcePathStyle: env.BLOB_PATH_STYLE,
+    credentials: {
+      accessKeyId: env.BLOB_ACCESS_KEY,
+      secretAccessKey: env.BLOB_SECRET_KEY,
+    },
+  });
+  const bucket = env.BACKUP_BUCKET ?? env.BLOB_BUCKET;
+  return { client, bucket };
+}
 
 export async function runBackup(): Promise<void> {
   const env = loadEnv();
@@ -50,14 +93,70 @@ export async function runBackup(): Promise<void> {
   const cipher = await encrypt(key, new Uint8Array(dump), aad);
   const blob = serializeBlob(cipher);
 
-  // 3. Upload
+  // 3. Upload to the backup bucket (falls back to BLOB_BUCKET when
+  //    BACKUP_BUCKET is unset).
+  const { client, bucket } = backupClient(env);
   try {
-    await blobStore().put(targetKey, blob, { contentType: 'application/octet-stream' });
+    await client.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: targetKey,
+        Body: blob,
+        ContentType: 'application/octet-stream',
+      }),
+    );
     logger.info(
-      { key: targetKey, plaintext_bytes: dump.length, encrypted_bytes: blob.length, ts: nowMs() },
+      {
+        bucket,
+        key: targetKey,
+        plaintext_bytes: dump.length,
+        encrypted_bytes: blob.length,
+        ts: nowMs(),
+      },
       'backup uploaded',
     );
   } catch (e) {
-    logger.error({ err: e }, 'backup upload failed');
+    logger.error({ err: e, bucket, key: targetKey }, 'backup upload failed');
+    return;
   }
+
+  // 4. Retention sweep — delete backup/* older than BACKUP_RETENTION_DAYS.
+  await sweepOldBackups(client, bucket, env.BACKUP_RETENTION_DAYS).catch((e) => {
+    logger.error({ err: e, bucket }, 'backup retention sweep failed');
+  });
+}
+
+async function sweepOldBackups(
+  client: S3Client,
+  bucket: string,
+  retentionDays: number,
+): Promise<void> {
+  const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  let continuationToken: string | undefined = undefined;
+  let deleted = 0;
+  let scanned = 0;
+
+  do {
+    const r: {
+      Contents?: _Object[];
+      NextContinuationToken?: string;
+    } = await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: 'backup/',
+        ContinuationToken: continuationToken,
+        MaxKeys: 1000,
+      }),
+    );
+    continuationToken = r.NextContinuationToken;
+    for (const obj of r.Contents ?? []) {
+      scanned += 1;
+      if (!obj.Key || !obj.LastModified) continue;
+      if (obj.LastModified.getTime() >= cutoffMs) continue;
+      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: obj.Key }));
+      deleted += 1;
+    }
+  } while (continuationToken);
+
+  logger.info({ bucket, retentionDays, scanned, deleted }, 'backup retention sweep done');
 }

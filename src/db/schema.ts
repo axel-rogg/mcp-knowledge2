@@ -39,7 +39,6 @@ export const objects = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     ownerId: uuid('owner_id').notNull(),
-    kind: text('kind').notNull(), // 'doc' | 'skill' | 'app' | 'memo'
     subtype: text('subtype'),
 
     title: text('title'),
@@ -102,9 +101,9 @@ export const objects = pgTable(
     lastUsedAt: bigint('last_used_at', { mode: 'number' }),
   },
   (t) => ({
-    ownerKind: index('idx_objects_owner_kind').on(t.ownerId, t.kind, t.subtype),
+    ownerSubtype: index('idx_objects_owner_subtype').on(t.ownerId, t.subtype),
     updated: index('idx_objects_updated').on(t.updatedAt),
-    ownerHash: index('idx_objects_owner_hash').on(t.ownerId, t.kind, t.bodyHash),
+    ownerHash: index('idx_objects_owner_hash').on(t.ownerId, t.bodyHash),
     deleted: index('idx_objects_deleted_at').on(t.deletedAt),
   }),
 );
@@ -188,7 +187,6 @@ export const shareGrants = pgTable(
   'share_grants',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    resourceKind: text('resource_kind').notNull(),
     resourceId: uuid('resource_id').notNull(),
     grantedTo: uuid('granted_to').notNull(),
     grantedBy: uuid('granted_by').notNull(),
@@ -209,7 +207,12 @@ export const objectVectors = pgTable(
   'object_vectors',
   {
     objectId: uuid('object_id').primaryKey(),
-    embedding: vector('embedding', 768),
+    // Dim follows EMBED_PROVIDER:
+    //   cloudflare → 1024 (bge-m3, default)
+    //   vertex     → 768  (text-multilingual-embedding-002, legacy)
+    // Schema is sized for the default (1024). Switching to vertex requires a
+    // dimension-shrink migration, not just a config flip.
+    embedding: vector('embedding', 1024),
     model: text('model').notNull(),
     embeddedAt: bigint('embedded_at', { mode: 'number' }).notNull(),
   },
@@ -224,11 +227,13 @@ export const auditLog = pgTable(
     ts: bigint('ts', { mode: 'number' }).notNull(),
     actorUserId: uuid('actor_user_id').notNull(),
     action: text('action').notNull(),
-    resourceKind: text('resource_kind'),
     resourceId: uuid('resource_id'),
     requestId: uuid('request_id'),
     result: text('result').notNull(),
     details: jsonb('details'),
+    // AS-3 K12: proxy-vs-direct provenance + approval correlation.
+    viaProxy: boolean('via_proxy').notNull().default(false),
+    approvalId: uuid('approval_id'),
   },
   (t) => ({
     actorTs: index('idx_audit_actor_ts').on(t.actorUserId, t.ts),
@@ -236,6 +241,57 @@ export const auditLog = pgTable(
     requestIdx: index('idx_audit_request_id').on(t.requestId),
   }),
 );
+
+// ─── Users (AS-3 K2) ───────────────────────────────────────────────────────
+
+// CITEXT in the DB; drizzle has no native citext customType so we surface as
+// text. The unique-index/CITEXT comparison stays case-insensitive at the DB
+// layer regardless of how the column is typed in TS.
+export const users = pgTable('users', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  email: text('email').notNull(),
+  googleSub: text('google_sub'),
+  displayName: text('display_name'),
+  role: text('role').notNull().default('member'),       // 'admin' | 'member'
+  status: text('status').notNull().default('active'),   // 'active' | 'suspended' | 'erased'
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  lastSeenAt: bigint('last_seen_at', { mode: 'number' }),
+  invitedBy: uuid('invited_by'),
+  inviteToken: text('invite_token'),
+});
+
+export const invites = pgTable('invites', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  email: text('email').notNull(),
+  token: text('token').notNull(),
+  invitedBy: uuid('invited_by').notNull(),
+  expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+  usedAt: bigint('used_at', { mode: 'number' }),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+});
+
+// ─── Signing Keys (AS-3 K1) ────────────────────────────────────────────────
+
+export const signingKeys = pgTable('signing_keys', {
+  kid: text('kid').primaryKey(),
+  alg: text('alg').notNull(),
+  publicJwk: jsonb('public_jwk').notNull(),
+  privatePem: text('private_pem').notNull(),
+  privateNonce: customType<{ data: Uint8Array; driverData: Buffer }>({
+    dataType() {
+      return 'bytea';
+    },
+    toDriver(v) {
+      return Buffer.from(v);
+    },
+    fromDriver(v) {
+      return new Uint8Array(v as Buffer);
+    },
+  })('private_nonce').notNull(),
+  active: boolean('active').notNull().default(true),
+  rotatedAt: bigint('rotated_at', { mode: 'number' }),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+});
 
 // ─── Idempotency Records ───────────────────────────────────────────────────
 
@@ -296,7 +352,7 @@ export const userQuotas = pgTable('user_quotas', {
   userId: uuid('user_id').primaryKey(),
   objectCountMax: integer('object_count_max').notNull().default(10_000),
   storageBytesMax: bigint('storage_bytes_max', { mode: 'number' }).notNull().default(5_368_709_120),
-  embedCallsPerDay: integer('embed_calls_per_day').notNull().default(1_000),
+  embedCallsPerDay: integer('embed_calls_per_day').notNull().default(5_000),
   searchQpsBurst: integer('search_qps_burst').notNull().default(30),
 
   objectCountUsed: integer('object_count_used').notNull().default(0),
@@ -306,6 +362,48 @@ export const userQuotas = pgTable('user_quotas', {
 
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+});
+
+// ─── OAuth Facade (AS-3 K3/K4) ─────────────────────────────────────────────
+
+export const oauthClients = pgTable('oauth_clients', {
+  clientId: text('client_id').primaryKey(),
+  clientSecret: text('client_secret'),
+  clientName: text('client_name'),
+  redirectUris: text('redirect_uris').array().notNull(),
+  grantTypes: text('grant_types').array().notNull(),
+  responseTypes: text('response_types').array().notNull(),
+  tokenEndpointAuthMethod: text('token_endpoint_auth_method').notNull().default('none'),
+  scope: text('scope').notNull(),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  lastUsedAt: bigint('last_used_at', { mode: 'number' }),
+});
+
+export const oauthAuthCodes = pgTable('oauth_auth_codes', {
+  codeHash: text('code_hash').primaryKey(),
+  clientId: text('client_id').notNull(),
+  userId: uuid('user_id').notNull(),
+  redirectUri: text('redirect_uri').notNull(),
+  scope: text('scope'),
+  codeChallenge: text('code_challenge').notNull(),
+  codeChallengeMethod: text('code_challenge_method').notNull(),
+  googleIdTokenSub: text('google_id_token_sub').notNull(),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+  consumedAt: bigint('consumed_at', { mode: 'number' }),
+});
+
+export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
+  tokenHash: text('token_hash').primaryKey(),
+  clientId: text('client_id').notNull(),
+  userId: uuid('user_id').notNull(),
+  scope: text('scope'),
+  googleIdTokenSub: text('google_id_token_sub').notNull(),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  lastUsedAt: bigint('last_used_at', { mode: 'number' }),
+  expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+  rotatedTo: text('rotated_to'),
+  revokedAt: bigint('revoked_at', { mode: 'number' }),
 });
 
 // ─── Re-exported helpers ───────────────────────────────────────────────────
@@ -322,6 +420,12 @@ export const schema = {
   uploads,
   userQuotas,
   blobDeletionQueue,
+  signingKeys,
+  users,
+  invites,
+  oauthClients,
+  oauthAuthCodes,
+  oauthRefreshTokens,
 };
 
 export type ObjectRow = typeof objects.$inferSelect;
@@ -330,3 +434,9 @@ export type ShareGrantRow = typeof shareGrants.$inferSelect;
 export type AuditLogRow = typeof auditLog.$inferSelect;
 export type UserQuotaRow = typeof userQuotas.$inferSelect;
 export type UploadRow = typeof uploads.$inferSelect;
+export type SigningKeyRow = typeof signingKeys.$inferSelect;
+export type NewSigningKeyRow = typeof signingKeys.$inferInsert;
+export type UserRow = typeof users.$inferSelect;
+export type NewUserRow = typeof users.$inferInsert;
+export type InviteRow = typeof invites.$inferSelect;
+export type NewInviteRow = typeof invites.$inferInsert;

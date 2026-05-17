@@ -88,7 +88,7 @@ async function insertObject(asUser: string, opts: { title: string }) {
   await appClient.query('BEGIN');
   await appClient.query(`SELECT set_config('app.current_user', $1, true)`, [asUser]);
   const r = await appClient.query<{ id: string }>(
-    `INSERT INTO objects (owner_id, kind, title, body_inline, body_size, nonce, created_at, updated_at)
+    `INSERT INTO objects (owner_id, subtype, title, body_inline, body_size, nonce, created_at, updated_at)
      VALUES ($1, 'doc', $2, '\\x00'::bytea, 5, '\\xaaaaaaaaaaaaaaaaaaaaaaaa'::bytea, 0, 0)
      RETURNING id`,
     [asUser, opts.title],
@@ -129,8 +129,8 @@ describe('RLS: objects visibility', () => {
     await appClient.query('BEGIN');
     await appClient.query(`SELECT set_config('app.current_user', $1, true)`, [USER_A]);
     await appClient.query(
-      `INSERT INTO share_grants (resource_kind, resource_id, granted_to, granted_by, scope, granted_at)
-       VALUES ('doc', $1, $2, $3, 'read', 0)`,
+      `INSERT INTO share_grants (resource_id, granted_to, granted_by, scope, granted_at)
+       VALUES ($1, $2, $3, 'read', 0)`,
       [id, USER_B, USER_A],
     );
     await appClient.query('COMMIT');
@@ -144,8 +144,8 @@ describe('RLS: objects visibility', () => {
     await appClient.query('BEGIN');
     await appClient.query(`SELECT set_config('app.current_user', $1, true)`, [USER_A]);
     await appClient.query(
-      `INSERT INTO share_grants (resource_kind, resource_id, granted_to, granted_by, scope, granted_at, revoked_at)
-       VALUES ('doc', $1, $2, $3, 'read', 0, 1)`,
+      `INSERT INTO share_grants (resource_id, granted_to, granted_by, scope, granted_at, revoked_at)
+       VALUES ($1, $2, $3, 'read', 0, 1)`,
       [id, USER_B, USER_A],
     );
     await appClient.query('COMMIT');

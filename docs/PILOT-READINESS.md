@@ -1,20 +1,34 @@
 # mcp-knowledge2 — Pilot Readiness
 
-> **Date**: 2026-05-13
+> **Date**: 2026-05-17 (Pilot-Deploy-Day — end-to-end LIVE)
 > **Owner**: Axel
-> **Target**: first paying-pilot customer hosted on Fly.io
-> **Sister service**: `mcp-approval2` (auth, sessions, KMS, approval flow)
+> **Target**: Solo-Pilot auf **Fly.io Frankfurt** (axelrogg@gmail.com), CF-Workers-Pfad bewusst geparkt — siehe [STRATEGIE-pilot.md](./STRATEGIE-pilot.md).
+> **Sister service**: `mcp-approval2` (Approval-Proxy, optional via OBO-Bridge).
 
 This document is the honest accounting of what's done, what's known
-broken, and what's still required before we put a customer's data on
-this service.
+broken, and what's still required before we put data on this service.
+
+**Update 2026-05-17 Pilot-Deploy-Day:** Pilot ist **end-to-end LIVE**. `https://mcp-knowledge2.fly.dev/health/ready` → `{"status":"ready","checks":{"db":"ok","blob":"ok"}}`. Schwester `https://mcp2.ai-toolhub.org/health` ✅. 3 Deploy-Bugs gefixt heute (pg-boss v10 createQueue, `/health/ready`-Differenzierung, R2 EU-jurisdiction-Endpoint `.eu.r2.cloudflarestorage.com`). Postgres Neon Free Tier eu-central-1 mit pgvector 0.8.0 + pg_trgm 1.6, 12 Migrations auto-applied via `release_command`. KEK = Google Cloud KMS `europe-west3` (single-region wegen google-Provider-6.x-Bug bei `eu` multi-region). 4 offene Punkte für 2026-05-18 in der Sign-off-Checklist unten.
+
+**Update 2026-05-16:** Komplettes Doku-vs-Code-Audit durchgeführt (3 parallele Subagent-Pässe + Doppler-Live-Check). Drift-Korrekturen sind in dieselbe Commit-Reihe geflossen (README/CLAUDE.md/ADR-0001/runbook-gcp/service.yaml). Dual-Runtime-Pfad geprüft + bewusst geparkt zugunsten Fly-single-target. Verbleibender Pilot-Pfad: §"Verbleibender Aufwand" weiter unten.
 
 ## TL;DR
 
-**Code is pilot-grade. Ops is pilot-grade once `bash deploy/fly/deploy.sh`
-runs cleanly once. The two known blockers are CROSS-SERVICE D-9
-(multi-kind search) and verifying the production AppRole boot path
-against a real `mcp-approval2`.**
+**Code is pilot-grade for both deployment targets (privat-Hetzner/Fly +
+business-GCP).** Ops is pilot-grade for privat once `bash deploy/fly/deploy.sh`
+runs cleanly once. CROSS-SERVICE D-9 (multi-subtype search) was resolved by
+ADR-0004 (generic object model).
+
+**Dual-Deploy-Architektur** (Stand 2026-05-15):
+
+| Profile | BLOB_PROVIDER | EMBED_PROVIDER | KMS_PROVIDER | Compute | Postgres | Monthly cost |
+|---|---|---|---|---|---|---|
+| `privat` | s3 (R2/Hetzner/Tigris) | cloudflare (Workers AI bge-m3) | openbao or hkdf_local | Fly.io / Hetzner VM | Neon Free Tier (eu-central-1) | ~3-4 €/Monat |
+| `business` | gcs (native, Workload Identity) | vertex (text-multilingual-embedding-002) | cloud_kms | Cloud Run gen2 | Cloud SQL Postgres 16 | 30-80 €/Monat |
+
+Provider-switch is **env-driven**, no code edits. Both profiles share the
+same container image — the deployment target only changes env-vars + service-
+account-binding.
 
 ---
 
@@ -33,21 +47,32 @@ against a real `mcp-approval2`.**
   - User routes: JWT verified via JWKS (24 h cache) against
     `mcp-approval2`. `sub` claim becomes `current_user`.
   - Internal routes: static `SERVICE_TOKEN` (constant-time compare).
-- **Crypto** — AES-256-GCM with **AAD** (`<recordType>|<owner>|<id>|<kind>:<subtype>`)
+- **Crypto** — AES-256-GCM with **AAD** (`<recordType>|<owner>|<id>`,
+  see ADR-0004 — kind/subtype slot removed from AAD as part of generic
+  object model)
   preventing cross-user / cross-object ciphertext replay. Per-user DEKs
   resolved on-demand via `mcp-approval2` KMS internal API; never
   persisted in `mcp-knowledge2`.
-- **PII masking** — applied to text **before** it leaves for Vertex AI
-  embedding, so the embedding provider never sees raw emails / phones.
-  (Embedding-inversion threat documented in
-  [`SECURITY.md`](./SECURITY.md).)
-- **Object CRUD** — `/v1/objects` with `kind` discriminator
-  (`doc | skill | app_state | memo`), inline body ≤ 16 KB in Postgres
-  or external blob via presigned upload pipeline (`/v1/uploads/init`).
+- **PII masking** — applied to text **before** it leaves the service for
+  embedding. **Default provider since 2026-05-15: Cloudflare Workers AI
+  (`@cf/baai/bge-m3`, 1024-dim, multilingual)** routed through a dedicated
+  AI Gateway `mcp-knowledge2` (TF-managed via
+  `mcp-approval2/terraform/environments/privat/knowledge2-cloudflare.tf`).
+  Optional fallback via `EMBED_PROVIDER=vertex`. Either way, the embedding
+  provider never sees raw emails / phones. (Embedding-inversion threat
+  documented in [`SECURITY.md`](./SECURITY.md).)
+- **Email-Whitelist** — `ALLOWED_EMAILS` CSV in Doppler is strictly
+  enforced on `/auth/google/callback`. Empty = open. Non-empty = only
+  listed emails complete OAuth. Defense-in-depth on top of the OAuth-App's
+  Test-Users list in Google Cloud Console.
+- **Object CRUD** — `/v1/objects` generic-object model (free-form
+  `subtype` string, no DB-enforced discriminator — see ADR-0004),
+  inline body ≤ 16 KB in Postgres or external blob via presigned upload
+  pipeline (`/v1/uploads/init`).
 - **Share grants** — `/v1/shares` with role-based access control,
   enforced by RLS predicate `owner_or_shared(object_id)`.
 - **Hybrid search** — FTS (Postgres `tsvector`) ⊕ pgvector (cosine) →
-  RRF fusion with `k=60`, per-kind filter.
+  RRF fusion with `k=60`, optional `subtypes: string[]` filter.
 - **Cross-service contracts** —
   - `/v1/internal/erase-user` — admin-role DELETE across all tables
     for a user id; uses `DATABASE_ADMIN_URL` (BYPASSRLS).
@@ -66,11 +91,15 @@ against a real `mcp-approval2`.**
 
 ### Tests
 
-- **16 unit tests** — crypto AAD, RRF fusion, JWT issuer/audience
-  validation, env-zod schema, PII mask, etc.
-- **1 integration test** — testcontainers spins a Postgres+pgvector,
-  applies migrations, exercises the RLS policy with two synthetic users.
-- All green as of 2026-05-13.
+- **Unit tests** — crypto AAD, RRF fusion, JWT issuer/audience
+  validation, env-zod schema, PII mask, etc. (`tests/unit/`).
+- **Contract tests** — wire-shape between approval2 ↔ KC2: `obo-jwt`,
+  `oauth-self-token`, `user-sync`, `mcp-tools-list` (`tests/contract/`).
+- **Integration tests** — testcontainers spin a Postgres+pgvector,
+  apply migrations, exercise the RLS policy and the full
+  objects-roundtrip (`tests/integration/`).
+- Green when run with Docker available. CI runs them on every push to
+  `main` and on PRs ([.github/workflows/ci.yml](../.github/workflows/ci.yml)).
 
 ### Operations
 
@@ -81,8 +110,10 @@ against a real `mcp-approval2`.**
 - **`fly.toml`** — Frankfurt single-region, 1 always-on machine,
   rolling deploys, release-command runs migrations.
 - **`deploy/fly/deploy.sh`** — first-deploy automation (app create,
-  pg create + attach, pgvector + pg_trgm extensions, secrets prompt,
-  deploy, smoke).
+  secrets sync from Doppler, deploy, smoke). Postgres ist seit 2026-05-17
+  TF-managed bei Neon (`mcp-approval2/terraform/environments/privat/neon-knowledge2.tf`);
+  die `pgvector` + `pg_trgm` Extensions sind ein einmaliger
+  `psql "$DATABASE_ADMIN_URL"` Bootstrap nach `terraform apply`.
 - **Runbook** — `docs/runbooks/runbook-fly-deploy.md` covers deploy,
   rollback, scale, secrets rotation, backup/restore, failure modes.
 
@@ -94,17 +125,20 @@ against a real `mcp-approval2`.**
 
 | ID | Item | Why blocking | Effort |
 |---|---|---|---|
-| D-9 | **Server-side multi-kind search** — accept `kind: string \| string[]` in `/v1/search` | Approval-side tool requires it; current server rejects multi-kind queries with 400 | ½ day — extend zod schema + WHERE clause in `src/search/index.ts` |
-| AppRole | **Verify production AppRole boot path** — `mcp-approval2` KMS API works under load | KMS-Internal-API code is in but never exercised against a real prod approval | ½ day — load-test once `mcp-approval2` is deployed to Fly |
+| ~~D-9~~ | ~~**Server-side multi-kind search**~~ | **Resolved by ADR-0004** — server accepts `subtypes: string[]` (free-form). | done |
+| ~~AppRole~~ | ~~**Verify production AppRole boot path**~~ | **Obsolete after AS-3 (K9):** KMS is now in-process via the `KmsProvider` factory (`hkdf_local` / `openbao` / `cloud_kms`) — no approval2 round-trip. ADR-0001 is superseded. | done |
+| GCP-wiring | **`deployments/cloud-run/service.yaml` still ships `BLOB_PROVIDER=s3` (GCS S3-Interop, HMAC) + `KMS_PROVIDER=hkdf_local`.** The native-GCS and Cloud-KMS adapters exist and are tested — they just need to be wired in the manifest + bootstrap. | Cosmetic for solo-pilot; required for the "business" profile spec'd in CLAUDE.md. | ½ day (edit manifest + drop HMAC step from `01-bootstrap.sh`, add WIF binding for GCS bucket) |
+| GCP-dim | **Cloud Run manifest defaults `EMBED_PROVIDER=vertex` (768-dim) but schema is 1024-dim** (migration `0010`). | Vector inserts will fail until either schema rolls back or `EMBED_PROVIDER` flips. | 5 min in the manifest + 4 secrets |
 | eslint | `src/crons/backup.ts` ESLint error (not runtime-affecting) | Quality only; not a pilot blocker but should be cleaned before "v1.0" | 10 min |
 
 ### Code follow-ups (post-pilot OK)
 
 - **Backup-restore script** — `scripts/restore-backup.ts` is referenced
   in the runbook but doesn't exist yet. Manual decrypt steps documented.
-- **Vertex AI retry/backoff** — currently single-shot; under quota
-  pressure the embed call will 5xx. Add `p-retry` w/ jitter once the
-  pilot tells us their throughput.
+- **Embedding-provider retry/backoff** — currently single-shot for both
+  Cloudflare Workers AI (default) and Vertex AI (fallback). Under quota
+  pressure the embed call will 5xx. Add `p-retry` w/ jitter in
+  `src/adapters/embed/index.ts` once the pilot tells us their throughput.
 - **Observability — tracing** — pino structured logs only. OpenTelemetry
   hooks are referenced in `.env.example` (`OTEL_EXPORTER_OTLP_ENDPOINT`)
   but not wired in.
@@ -116,7 +150,7 @@ against a real `mcp-approval2`.**
 | ID | Item | Owner action |
 |---|---|---|
 | Ops-1 | **Run `deploy/fly/deploy.sh` against a clean Fly org once** end-to-end, verify health checks green | Manual; ~30 min |
-| Ops-2 | **Set up Postgres backups beyond the app-cron** — enable Fly's volume snapshots (free, automatic; just verify) | `fly volumes snapshots list` — confirm cadence |
+| Ops-2 | **Verify Neon Branching / PITR active** — Free Tier: 6 h `history_retention_seconds`, branching via Neon Console. Bei echtem Customer-Volumen Upgrade auf Neon Launch (~$5/mo, 7d Retention) erwägen. | Neon Console → Project → Branches |
 | Ops-3 | **Wire blob provider** — pick Tigris (recommended, in-network) or R2/B2, create bucket, set BLOB_* secrets | ~15 min |
 | Ops-4 | **DNS + custom domain** — optional but recommended; default `*.fly.dev` works for pilot | `fly certs add knowledge.firma.invalid` |
 | Ops-5 | **Smoke test from the customer's side** — issue them a `mcp-approval2` JWT, walk through put/get/search/share | Pair-session with the pilot |
@@ -134,50 +168,72 @@ against a real `mcp-approval2`.**
 ## Smoke test (cuts the pilot-ready ribbon)
 
 After running `deploy/fly/deploy.sh` end-to-end, the following must all
-pass against `https://mcp-knowledge2.fly.dev`:
+pass against `https://mcp-knowledge2.fly.dev`. The whole smoke is split
+in two halves: **(I) öffentliche Endpoints** brauchen keinen Token,
+**(II) authentisierte Endpoints** brauchen einen Token aus einem der
+drei Pfade in [INTEGRATION.md](./INTEGRATION.md) (Default: Pfad A —
+claude.ai-DCR-Flow, Token aus den DevTools/Connector-Settings).
+
+> **Wichtiger Hinweis 2026-05-16:** Frühere Versionen dieser Datei
+> verwiesen auf `https://mcp-approval2.fly.dev/v1/internal/debug-jwt`,
+> um in Schritt 2 einen Token zu minten. **Dieser Endpoint existiert
+> weder in mcp-approval2 noch in mcp-knowledge2** — seit AS-3 ist KC2
+> der Token-Issuer über die eigene OAuth-Facade. Der Smoke-Token muss
+> aus genau diesem Flow kommen.
 
 ```bash
-# 1. Public health
-curl -sf https://mcp-knowledge2.fly.dev/health                | jq .
-curl -sf https://mcp-knowledge2.fly.dev/health/ready          | jq .
+# I. Public — keine Auth nötig
+curl -sf https://mcp-knowledge2.fly.dev/health                                 | jq .
+curl -sf https://mcp-knowledge2.fly.dev/health/ready                            | jq .
+curl -sf https://mcp-knowledge2.fly.dev/.well-known/oauth-authorization-server  | jq .
+curl -sf https://mcp-knowledge2.fly.dev/.well-known/jwks.json                   | jq .
 
-# 2. Issue a JWT from mcp-approval2 for a synthetic user
-TOKEN=$(curl -sf https://mcp-approval2.fly.dev/v1/internal/debug-jwt \
-  -H "authorization: bearer $SERVICE_TOKEN" \
-  -d '{"sub":"smoke-user","scope":"knowledge:rw"}' | jq -r .jwt)
+# DCR — auch öffentlich (gibt einen frischen MCP-client-eintrag zurück, kann
+# nach dem Smoke wieder ignoriert/gelöscht werden)
+curl -sf -X POST https://mcp-knowledge2.fly.dev/oauth/register \
+  -H "content-type: application/json" \
+  -d '{"redirect_uris":["http://localhost/cb"],"client_name":"smoke"}' | jq .
 
-# 3. Round-trip: put → get → list → search → delete
-ID=$(curl -sf -X PUT https://mcp-knowledge2.fly.dev/v1/objects \
+# II. Authentisiert — Token aus INTEGRATION.md Pfad A holen
+# (claude.ai → Connector → mcp-knowledge2 OAuth durchlaufen → Token aus DevTools)
+export TOKEN="<paste-kc2-access-token-here>"
+
+# Round-trip: create → get → list → search → delete
+ID=$(curl -sf -X POST https://mcp-knowledge2.fly.dev/v1/objects \
   -H "authorization: bearer $TOKEN" \
   -H "content-type: application/json" \
-  -d '{"kind":"doc","subtype":"note","body":"hello pilot"}' | jq -r .id)
+  -d '{"subtype":"doc","body_b64":"aGVsbG8gcGlsb3Q=","title":"smoke"}' | jq -r .id)
 
 curl -sf -H "authorization: bearer $TOKEN" \
-  https://mcp-knowledge2.fly.dev/v1/objects/$ID | jq .
+  "https://mcp-knowledge2.fly.dev/v1/objects/$ID?expand=body" | jq .
 
 curl -sf -H "authorization: bearer $TOKEN" \
-  "https://mcp-knowledge2.fly.dev/v1/objects?kind=doc&limit=10" | jq .
+  "https://mcp-knowledge2.fly.dev/v1/objects?subtype=doc&limit=10" | jq .
 
-curl -sf -H "authorization: bearer $TOKEN" \
-  "https://mcp-knowledge2.fly.dev/v1/search?q=pilot&kind=doc" | jq .
+curl -sf -X POST https://mcp-knowledge2.fly.dev/v1/search \
+  -H "authorization: bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"query":"pilot","subtypes":["doc"]}' | jq .
 
 curl -sf -X DELETE -H "authorization: bearer $TOKEN" \
   https://mcp-knowledge2.fly.dev/v1/objects/$ID
 
-# 4. RLS isolation — second user cannot see first user's data
-TOKEN2=$(... # JWT for "smoke-user-2")
-curl -s -H "authorization: bearer $TOKEN2" \
-  https://mcp-knowledge2.fly.dev/v1/objects/$ID
-# Expect: 404 (or 403; never 200)
+# Service-Token-Route — gates /v1/internal/*; nutzt den $SERVICE_TOKEN
+# aus Doppler (NICHT den OAuth-access-token oben).
+export SERVICE_TOKEN="$(doppler secrets get SERVICE_TOKEN --plain \
+  --project mcp-knowledge2 --config fly)"
 
-# 5. Internal erase-user round-trip
-curl -sf -X POST https://mcp-knowledge2.fly.dev/v1/internal/erase-user \
-  -H "authorization: bearer $SERVICE_TOKEN" \
-  -d '{"user_id":"smoke-user"}'
-# Expect: 200 with rows-deleted breakdown
+curl -sf -X POST https://mcp-knowledge2.fly.dev/v1/internal/health-deep \
+  -H "authorization: bearer $SERVICE_TOKEN" | jq .
+
+# RLS-Negativtest (optional, braucht zweiten User):
+# Wiederholung Schritt II mit einem zweiten OAuth-Token, der für eine andere
+# Email gemintet wurde. GET /v1/objects/<id-vom-ersten-user> muss 404 liefern.
 ```
 
-When all 5 pass, we are **pilot-ready**.
+Sobald die obigen authentisierten Calls grün sind, ist der **erste
+Smoke-Pass** abgeschlossen. Der RLS-Negativtest braucht einen zweiten
+Account und ist Teil des Sign-off, nicht des ersten Smokes.
 
 ---
 
@@ -188,8 +244,10 @@ When all 5 pass, we are **pilot-ready**.
 - **Latency**: p50 < 80 ms for read/list, p95 < 250 ms (Frankfurt → EU);
   search p50 < 200 ms, p95 < 600 ms (vector + FTS round-trip).
 - **Throughput**: untested. The pilot itself is the throughput test.
-- **Data residency**: all data in EU (Frankfurt). Vertex AI requests go
-  to `europe-west4` for embeddings.
+- **Data residency**: all data in EU (Frankfurt). Embedding-Requests:
+  default Cloudflare Workers AI via AI Gateway in CF-EU-Edges (kein GCP-
+  Egress); optional Vertex AI `europe-west4` als Fallback wenn
+  `EMBED_PROVIDER=vertex`.
 - **Encryption**: AES-256-GCM at rest (per-user DEK) + TLS in transit.
   Backups separately encrypted with `BACKUP_MASTER_KEY`. We never see
   plaintext keys at rest in `mcp-knowledge2`.
@@ -198,19 +256,81 @@ When all 5 pass, we are **pilot-ready**.
 
 ---
 
+## Verbleibender Aufwand bis erster grüner Smoke (Stand 2026-05-16)
+
+Nach dem End-to-End-Audit ist der konkrete Rest-Pfad bis `https://mcp-knowledge2.fly.dev` 200-grün:
+
+### Doppler-Gap (Config `mcp-knowledge2 / fly` — live-verifiziert 2026-05-16)
+
+Doppler hat das Project `mcp-knowledge2` mit Environments `dev`, `privat` (legacy backup) und `fly` (aktive Pilot-Config). Skript-Default 2026-05-16: erst `prd_fly` → `privat` aliasiert, dann auf `fly` umgestellt (klares Deploy-Target-Naming, parallel zum Schwester-Project `mcp-approval2/hetzner`). **Seit 2026-05-17 sind die DB-Keys TF-managed (Neon-Provider in `mcp-approval2`). 5 Blob-Keys bleiben User-Action-abhängig:**
+
+| Key | Quelle / Wie generieren | Notiz |
+|---|---|---|
+| `SERVICE_TOKEN` | `openssl rand -hex 32` | Gates `/v1/internal/*`, auch S2S-Two-Factor mit OBO |
+| `BACKUP_MASTER_KEY` | `openssl rand -base64 32` | AES-256-GCM für tägliche Backups + signing_keys at rest |
+| `KMS_MASTER_KEY_B64` | `openssl rand -base64 32` | Master für HKDF-Derivation (KMS_PROVIDER=hkdf_local) |
+| `DATABASE_URL` / `DATABASE_ADMIN_URL` / `DB_APP_PASSWORD` / `DB_ADMIN_PASSWORD` | **automatisch von TF aus Neon-Provider** | werden beim `terraform apply` von `neon-knowledge2.tf` in Doppler gepusht (Host `ep-young-term-alpu306x-pooler.c-3.eu-central-1.aws.neon.tech`) — kein manueller Step mehr nötig |
+| `BLOB_ENDPOINT` | Tigris empfohlen: `https://fly.storage.tigris.dev` | alternativ R2 / B2 / Hetzner-OS |
+| `BLOB_ACCESS_KEY` | Provider-Dashboard | |
+| `BLOB_SECRET_KEY` | Provider-Dashboard | |
+| `BLOB_BUCKET` | z.B. `mcp-knowledge2-blob-eu` | im Provider-Dashboard anlegen |
+| `BACKUP_BUCKET` | z.B. `mcp-knowledge2-backup-eu` | separate Lifecycle: 30 d Retention |
+
+**Schon gefüllt (verifiziert, len > 0):**
+
+`GOOGLE_OAUTH_CLIENT_ID` (72) ✓, `GOOGLE_OAUTH_CLIENT_SECRET` (35) ✓, `CLOUDFLARE_ACCOUNT_ID` (32) ✓, `CLOUDFLARE_API_TOKEN` (53) ✓, `CLOUDFLARE_AI_GATEWAY_ID` (14) ✓, `CLOUDFLARE_AI_MODEL` (15) ✓, `EMBED_PROVIDER` (10) ✓, `ALLOWED_EMAILS` (40) ✓, `BLOB_REGION` (10) ✓, plus aller `[env]`-Mirror-Keys (`PORT`, `NODE_ENV`, `LOG_LEVEL`, `SELF_OAUTH_ISSUER`, etc.) — die werden vom Sync-Skript skipped, weil `fly.toml` sie direkt setzt.
+
+**Empty + irrelevant** (KMS-Provider ist `hkdf_local`, OBO ist optional, Vertex ist Fallback, GCP-Custom-Domain unused):
+`OPENBAO_ADDR`, `OPENBAO_TOKEN`, `MCP_APPROVAL_JWKS_URL`, `CLOUDFLARE_AI_GATEWAY_TOKEN`, `GOOGLE_HD_ALLOWLIST`, `VERTEX_PROJECT`, `VERTEX_SERVICE_ACCOUNT_JSON_PATH`, `DOMAIN_KNOWLEDGE`.
+
+**Anomalien** (Doppler-Cross-Contamination, kann ignoriert oder gelöscht werden):
+- `ALLOWED_ORIGINS` — kein env-Var in mcp-knowledge2 (gehört zu mcp-approval). Verursacht kein Problem, weil sync-Skript es einfach mitschiebt aber der Worker es nie liest.
+
+### Code-Blocker (über die Doppler-Gap hinaus)
+
+| ID | Item | Why blocking | Effort |
+|---|---|---|---|
+| ~~D-9~~ | ~~Server-side multi-kind search~~ | Resolved by ADR-0004. | done |
+| ~~AppRole~~ | ~~Verify production AppRole boot path~~ | **Obsolete after AS-3 (K9):** KMS ist jetzt in-process. ADR-0001 ist superseded. | done |
+| ~~GCP-Wiring + GCP-Dim-Mismatch~~ | ~~Cloud-Run-Manifest auf native GCS + Cloud KMS umstellen~~ | **Nicht im Pilot-Pfad** — Fly nutzt S3-Tigris + hkdf_local + Cloudflare-Embed. Cloud-Run-Migration ist Post-Pilot, falls überhaupt. | postponed |
+| ~~eslint~~ | ~~`src/crons/backup.ts` ESLint-Warning~~ | `npm run lint` (max-warnings=0) ist clean per 2026-05-16 — der Punkt war offenbar mit dem AS-3-Code-Complete schon gelöst. | done |
+| ~~restore-script~~ | ~~`scripts/restore-backup.ts` Placeholder im Runbook~~ | Geschrieben 2026-05-16 — siehe [scripts/restore-backup.ts](../scripts/restore-backup.ts). Spiegelt den Encrypt-Pfad von [src/crons/backup.ts](../src/crons/backup.ts): AES-256-GCM Decrypt + `pg_restore --clean --no-owner`. | done |
+
+### Externe Vorarbeiten (außerhalb des Repos)
+
+| ID | Item | Status |
+|---|---|---|
+| Ops-1 | `flyctl auth login` mit Fly-Account, der `mcp-knowledge2` als App erstellen darf | offen — User-Aktion |
+| Ops-2 | Google OAuth 2.0 Client erstellt + Redirect-URI `https://mcp-knowledge2.fly.dev/auth/google/callback` registriert | ✅ Credentials liegen in Doppler |
+| Ops-3 | Cloudflare-Account + API-Token (Workers AI Read + AI Gateway Run) + AI-Gateway `mcp-knowledge2` | ✅ alle Felder in Doppler gefüllt |
+| Ops-4 | Blob-Provider entschieden + zwei Buckets erstellt (Data + Backup) | **offen — User-Aktion**, Tigris empfohlen |
+| Ops-5 | DNS / Custom Domain | **optional**, Default `*.fly.dev` reicht für Solo-Pilot |
+
 ## Sign-off checklist
 
-Before flipping the pilot live:
+Vor dem ersten echten Pilot-Use:
 
-- [ ] D-9 multi-kind search merged + smoke-tested
-- [ ] AppRole/KMS roundtrip verified against deployed mcp-approval2
-- [ ] `deploy/fly/deploy.sh` run end-to-end on a clean Fly org
-- [ ] All 5 smoke-test steps pass
-- [ ] Blob provider chosen + secrets set + first object round-trips
-- [ ] Backup job's first run lands in the blob bucket (check after
-      03:00 UTC the day after deploy)
-- [ ] Customer signed DPA + has their own `mcp-approval2` instance
-      issuing JWTs for their users
-- [ ] On-call rota established (who responds to `/health/ready` 503?)
-- [ ] Restore-from-backup dry-run completed (`pg_restore` against a
-      throwaway db from the encrypted dump)
+- [x] D-9 multi-kind search — resolved by ADR-0004 (`subtypes: string[]`)
+- [x] KMS in-process per `KmsProvider`-Factory (kein approval2-Round-Trip mehr nötig)
+- [x] Doku-vs-Code-Audit 2026-05-16 done, alle Drift-Stellen korrigiert
+- [x] Doppler-Stand live-verifiziert (Project `mcp-knowledge2`, Config `fly`)
+- [x] Doppler-Config `fly` etabliert (Klartext am Deploy-Target; alte `privat`-Config bleibt als Backup)
+- [x] 5 leere Blob-Doppler-Keys gefüllt — R2 EU-jurisdiction-Endpoint `https://<account>.eu.r2.cloudflarestorage.com` (2026-05-17)
+- [x] Blob-Provider gewählt + zwei Buckets provisioniert — R2 EU `mcp-knowledge2-blob-eu` + `mcp-knowledge2-backup-eu`
+- [x] `terraform apply` für `neon-knowledge2.tf` durchgelaufen (im Schwester-Repo `mcp-approval2`)
+- [x] Einmaliger Neon-Bootstrap: pgvector 0.8.0 + pg_trgm 1.6 installiert (2026-05-17)
+- [x] `bash deploy/fly/deploy.sh` einmal komplett durchlaufen (2026-05-17)
+- [x] `/health` und `/health/ready` grün gegen `https://mcp-knowledge2.fly.dev` (2026-05-17, `{"status":"ready","checks":{"db":"ok","blob":"ok"}}`)
+- [x] OAuth-Facade Discovery + JWKS public erreichbar (`curl /.well-known/oauth-authorization-server`)
+- [ ] Smoke-Roundtrip put → get → list → search → share → delete grün — siehe Block weiter oben (User-Hand-Test, blockiert durch OAuth-Redirect-URI-Fix unten)
+- [ ] RLS-Isolation: zweiter Smoke-User kann den Object eines anderen nicht lesen
+- [ ] Erstes Backup-File landet am nächsten Morgen 03:00 UTC im `BACKUP_BUCKET`
+- [ ] [INTEGRATION.md](./INTEGRATION.md) durchgelesen + entschieden, wie der Service in den eigenen Workflow eingebunden wird (claude.ai DCR oder mcp-approval2-OBO)
+- [ ] Restore-from-backup dry-run (`pg_restore` gegen Throwaway-DB) — **Post-Pilot acceptable**, Pflicht vor erstem echten User-Daten-Tag
+
+### Offen für 2026-05-18 (Pilot-Deploy-Day Tail)
+
+- [ ] **Token-Rotation** (Doppler-Leak-Hygiene aus 2026-05-16): Google-OAuth-Client-Secret, R2-Tokens, JWT-Keys, internal Tokens. Großteils External-Console-Arbeit.
+- [ ] **GCP-Console: OAuth-Client Redirect-URI** von `https://knowledge.ai-toolhub.org/auth/google/callback` auf `https://knowledge2.ai-toolhub.org/auth/google/callback` umstellen. 1 Klick. Blockiert den authentisierten Smoke-Roundtrip oben.
+- [ ] **TLS-Cert für `knowledge2.ai-toolhub.org`** — DNS-01 validating, sollte morgen früh durch sein. Managed by `fly_cert.knowledge2` im Schwester-Repo TF (frisch importiert heute).
+- [ ] **End-to-End MCP-Test via Claude.ai** — User-Hand-Test, exercised whole flow (DCR → authorize → token → MCP tools/call).

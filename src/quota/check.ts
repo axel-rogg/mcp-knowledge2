@@ -1,17 +1,29 @@
 // Per-user quota enforcement (PLAN §11).
 //
-// Defaults: 10k objects / 5 GB / 1000 embed-calls/day / 30 QPS burst.
+// Defaults: 10k objects / 5 GB / 5000 embed-calls/day / 30 QPS burst.
+//
+// Embed-Cap-Reasoning (2026-05-16): 5000/Tag passt zur User-Toleranz für
+// Solo-Pilot. CF Workers AI bge-m3 kostet ~$0.0001/call → 5000 = $0.50/Tag
+// = ~$15/Monat Cap, falls die Quota wirklich täglich erreicht wird (in
+// der Praxis erreicht niemand das, weil Object-Create + Search-Query
+// realistisch <100/Tag liegen). Threshold-Warning greift bei 4000 (80%).
 
 import { and, eq, sql } from 'drizzle-orm';
 import { userQuotas, type UserQuotaRow } from '../db/schema.ts';
 import { withUserTx } from '../db/client.ts';
 import { errQuotaExceeded } from '../lib/errors.ts';
 import { nowMs } from '../lib/ids.ts';
+import { logger } from '../lib/logger.ts';
+
+// Per-day, per-user state for "already warned at 80% threshold" — prevents
+// log-spam when many calls happen above the threshold. Cleared automatically
+// on day-rollover because the key encodes the reset epoch.
+const embedWarnedAt = new Map<string, number>();
 
 const DEFAULTS = {
   object_count_max: 10_000,
   storage_bytes_max: 5_368_709_120,
-  embed_calls_per_day: 1_000,
+  embed_calls_per_day: 5_000,
   search_qps_burst: 30,
 };
 
@@ -139,6 +151,39 @@ export async function assertEmbedQuota(userId: string, requestId: string): Promi
       resetAt: current.embedCallsResetAt,
     });
   }
+
+  // Threshold-warning: log once per user per day when usage crosses 80%.
+  // Operator-facing — gives a heads-up before the user actually hits 429.
+  const post = await ensureQuotaRow(userId, requestId);
+  if (post.embedCallsToday >= Math.floor(post.embedCallsPerDay * 0.8)) {
+    const key = `${userId}:${post.embedCallsResetAt}`;
+    if (!embedWarnedAt.has(key)) {
+      embedWarnedAt.set(key, now);
+      logger.warn(
+        {
+          userId,
+          used: post.embedCallsToday,
+          max: post.embedCallsPerDay,
+          pct: Math.round((post.embedCallsToday / post.embedCallsPerDay) * 100),
+          resetAt: post.embedCallsResetAt,
+        },
+        'embed quota >=80% for user — investigate usage pattern',
+      );
+      // Best-effort eviction of stale day-keys (housekeeping; the map stays
+      // tiny under realistic Solo-Pilot load, but a Map without cleanup is
+      // a memory-leak in long-running processes).
+      if (embedWarnedAt.size > 1000) {
+        for (const [k, ts] of embedWarnedAt) {
+          if (ts < now - 2 * ONE_DAY_MS) embedWarnedAt.delete(k);
+        }
+      }
+    }
+  }
+}
+
+/** Test-only: clear the threshold-warning bookkeeping. */
+export function resetEmbedWarnedForTest(): void {
+  embedWarnedAt.clear();
 }
 
 export async function releaseObjectQuota(

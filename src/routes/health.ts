@@ -3,7 +3,7 @@
 import { Hono } from 'hono';
 import { sql } from 'drizzle-orm';
 import { appDbPool } from '../db/client.ts';
-import { blobStore } from '../adapters/blob/s3.ts';
+import { blobStore } from '../adapters/blob/index.ts';
 import { metricsText } from '../observability/metrics.ts';
 
 const VERSION = process.env.npm_package_version ?? '0.1.0';
@@ -20,15 +20,23 @@ export const healthRouter = new Hono()
     }),
   )
   .get('/health/ready', async (c) => {
+    // Differentiated readiness:
+    //   - DB is load-bearing — every request reads/writes Postgres. DB-fail = 503.
+    //   - Blob is opportunistic — only object-bodies > 16 KB persist to R2; the
+    //     app can serve all metadata + small-body operations without blob.
+    //     Blob-fail => status="degraded", but still HTTP 200 so the Fly proxy
+    //     keeps routing traffic. Per-operation errors propagate when the blob
+    //     path is actually hit.
     const checks: Record<string, string> = {};
-    let ok = true;
+    let dbOk = true;
+    let blobOk = true;
 
     try {
       const r = await appDbPool().query('SELECT 1 AS up');
       checks.db = r.rowCount ? 'ok' : 'empty';
     } catch (e) {
       checks.db = `error: ${(e as Error).message}`;
-      ok = false;
+      dbOk = false;
     }
 
     try {
@@ -37,10 +45,11 @@ export const healthRouter = new Hono()
       checks.blob = 'ok';
     } catch (e) {
       checks.blob = `error: ${(e as Error).message}`;
-      ok = false;
+      blobOk = false;
     }
 
-    return c.json({ status: ok ? 'ready' : 'degraded', checks }, ok ? 200 : 503);
+    const status = dbOk ? (blobOk ? 'ready' : 'degraded') : 'down';
+    return c.json({ status, checks }, dbOk ? 200 : 503);
   })
   .get('/metrics', async (c) => {
     const body = await metricsText();

@@ -3,129 +3,76 @@
 #
 # Prereqs:
 #   • flyctl installed and `fly auth login` done
-#   • Organization picked (`fly orgs list`)
-#   • mcp-approval2 already deployed at https://mcp-approval2.fly.dev
-#     (or update fly.toml's MCP_APPROVAL_BASE_URL + JWKS_URL accordingly)
-#   • Vertex AI service-account JSON available locally as ./vertex-sa.json
-#   • Knowledge of the matching MCP_APPROVAL_INTERNAL_TOKEN set on
-#     mcp-approval2 (must be identical on both sides for DEK resolve)
+#   • doppler CLI installed and `doppler setup --project mcp-knowledge2 --config fly`
+#     done. All sensitive values are pulled from Doppler; nothing is
+#     prompted from the shell. See deploy/fly/README.md for the canonical
+#     list of secrets you must have populated in Doppler before running
+#     this script.
+#   • jq installed (the secrets-sync step needs it)
 #
 # Re-runs are safe — `fly apps create` is the only step that errors on
 # repeat; the others are idempotent or guarded.
 
 set -euo pipefail
 
-APP_NAME="mcp-knowledge2"
-PG_NAME="mcp-knowledge2-pg"
-REGION="fra"
-BLOB_BUCKET_NAME="${BLOB_BUCKET_NAME:-knowledge-eu}"
-BACKUP_BUCKET_NAME="${BACKUP_BUCKET_NAME:-knowledge-backup-eu}"
+APP_NAME="${APP_NAME:-mcp-knowledge2}"
+# PG is Neon now (TF-managed in mcp-approval2/terraform/environments/privat/
+# neon-knowledge2.tf). Region var kept for the Fly app only.
+REGION="${REGION:-fra}"
+DOPPLER_PROJECT="${DOPPLER_PROJECT:-mcp-knowledge2}"
+# Default `fly` — deploy-target-named Doppler-config (clear matching for
+# the Fly.io compute-target). Older setups used `privat`; that config
+# still exists as backup. Override via `DOPPLER_CONFIG=…` if you maintain
+# a customer-specific config (e.g. `fly_pilot1`).
+DOPPLER_CONFIG="${DOPPLER_CONFIG:-fly}"
 
 step() { printf '\n\033[1;36m▸ %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m! %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*"; exit 1; }
 
-command -v fly >/dev/null 2>&1 || die "flyctl not on PATH — install from https://fly.io/docs/flyctl/install/"
+command -v fly     >/dev/null 2>&1 || die "flyctl not on PATH — install from https://fly.io/docs/flyctl/install/"
+command -v doppler >/dev/null 2>&1 || die "doppler CLI not installed — https://docs.doppler.com/docs/cli"
+command -v jq      >/dev/null 2>&1 || die "jq not installed"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # ─── 1. App ───────────────────────────────────────────────────────────
+# Alternativ kann die App-Existenz via Terraform gemanagt werden — siehe
+# docs/plans/active/PLAN-fly-terraform.md + mcp-approval2/terraform/
+# environments/privat/knowledge2-fly.tf. In dem Fall hat `terraform apply`
+# die App bereits angelegt; der Check unten skippt dann sauber.
 step "App: create '$APP_NAME' in org (if missing)"
 if fly apps list 2>/dev/null | awk '{print $1}' | grep -qx "$APP_NAME"; then
-  warn "app '$APP_NAME' already exists — skipping create"
+  warn "app '$APP_NAME' already exists — skipping create (TF-managed or prior flyctl run)"
 else
   fly apps create "$APP_NAME" --org personal
 fi
 
-# ─── 2. Postgres cluster + pgvector ───────────────────────────────────
-step "Postgres: provision cluster '$PG_NAME' (region=$REGION)"
-if fly apps list 2>/dev/null | awk '{print $1}' | grep -qx "$PG_NAME"; then
-  warn "postgres app '$PG_NAME' already exists — skipping create"
+# ─── 2. Postgres ──────────────────────────────────────────────────────
+# Postgres is Neon now — see TF in
+# mcp-approval2/terraform/environments/privat/neon-knowledge2.tf.
+# `terraform apply` provisions the project, roles (knowledge_app + knowledge_admin,
+# both in neon_superuser → BYPASSRLS, no extra GRANTs), and pushes
+# DATABASE_URL / DATABASE_ADMIN_URL / DB_APP_PASSWORD / DB_ADMIN_PASSWORD
+# into Doppler. One-time bootstrap after first apply:
+#   psql "$DATABASE_ADMIN_URL" -c 'CREATE EXTENSION vector; CREATE EXTENSION pg_trgm;'
+step "Postgres: TF-managed at Neon — verify DATABASE_URL is staged in Doppler"
+if doppler secrets get DATABASE_URL --plain --project "$DOPPLER_PROJECT" --config "$DOPPLER_CONFIG" >/dev/null 2>&1; then
+  warn "DATABASE_URL present in Doppler ($DOPPLER_PROJECT/$DOPPLER_CONFIG)"
 else
-  fly postgres create \
-    --name "$PG_NAME" \
-    --region "$REGION" \
-    --vm-size shared-cpu-1x \
-    --volume-size 3 \
-    --initial-cluster-size 1
+  die "DATABASE_URL not staged in Doppler — run \`terraform apply\` for neon-knowledge2.tf first"
 fi
 
-step "Postgres: attach to '$APP_NAME' (sets DATABASE_URL secret on the app)"
-if fly secrets list -a "$APP_NAME" 2>/dev/null | grep -q '^DATABASE_URL'; then
-  warn "DATABASE_URL already attached — skipping"
-else
-  fly postgres attach "$PG_NAME" --app "$APP_NAME"
-fi
-
-step "Postgres: enable pgvector extension"
-cat <<'SQL' | fly postgres connect -a "$PG_NAME"
-CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-SQL
-
-step "Postgres: create separate admin role (BYPASSRLS, for /v1/internal/erase-user)"
-warn "Manual step recommended — fly postgres connect -a $PG_NAME and run:"
-cat <<'SQL'
-  -- Replace <strong-random-pw>; generate via: openssl rand -hex 24
-  CREATE ROLE knowledge_admin LOGIN PASSWORD '<strong-random-pw>' BYPASSRLS;
-  GRANT ALL ON DATABASE knowledge TO knowledge_admin;
-  -- After app's first migration grants schema privileges to knowledge_app,
-  -- also grant to knowledge_admin so it can SELECT/DELETE across users:
-  GRANT ALL ON ALL TABLES    IN SCHEMA public TO knowledge_admin;
-  GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO knowledge_admin;
-SQL
-
-# ─── 3. Secrets ───────────────────────────────────────────────────────
-step "Secrets: set production secrets on '$APP_NAME'"
-cat <<EOF
-Please set the following secrets manually (values not echoed to the
-shell/transcript). Use:
-
-  fly secrets set --app $APP_NAME KEY=VALUE [KEY=VALUE ...]
-
-Required secrets:
-  ▸ SERVICE_TOKEN
-      Random 32-byte hex; gates /v1/internal/*.
-      Generate: openssl rand -hex 32
-
-  ▸ MCP_APPROVAL_INTERNAL_TOKEN
-      MUST match the value on mcp-approval2 — used by mcp-knowledge2 to
-      call mcp-approval2's KMS internal API for DEK resolve.
-
-  ▸ DATABASE_ADMIN_URL
-      Connection string with the BYPASSRLS role created above. Format:
-      postgres://knowledge_admin:<pw>@<pg-internal-host>.flycast:5432/knowledge
-      Find the host with: fly postgres list ; then connect details in
-      \`fly secrets list -a $APP_NAME\` (the regular DATABASE_URL has it).
-
-  ▸ VERTEX_PROJECT
-      GCP project id for Vertex AI.
-
-  ▸ VERTEX_SERVICE_ACCOUNT_JSON
-      Inline the service-account JSON contents (one-liner):
-        fly secrets set --app $APP_NAME \\
-          VERTEX_SERVICE_ACCOUNT_JSON="\$(cat vertex-sa.json | tr -d '\\n')"
-      The app reads VERTEX_SERVICE_ACCOUNT_JSON if set, else falls back to
-      VERTEX_SERVICE_ACCOUNT_JSON_PATH.
-
-  ▸ BACKUP_MASTER_KEY
-      base64(32 random bytes); independent of any DEK.
-      Generate: openssl rand -base64 32
-
-  ▸ BLOB_ENDPOINT / BLOB_REGION / BLOB_ACCESS_KEY / BLOB_SECRET_KEY /
-    BLOB_BUCKET / BLOB_PATH_STYLE
-      Pick a provider: Cloudflare R2, Backblaze B2, Tigris (Fly's native
-      S3, https://fly.io/docs/reference/tigris/), or GCS. Tigris is the
-      lowest-latency option since it runs inside the Fly network.
-
-  ▸ BACKUP_BUCKET
-      Separate bucket from BLOB_BUCKET (different lifecycle / retention).
-
-EOF
-read -p "Press <enter> once secrets are set, or Ctrl-C to abort: " _
+# ─── 3. Sync secrets from Doppler ─────────────────────────────────────
+step "Sync secrets from Doppler (project=$DOPPLER_PROJECT, config=$DOPPLER_CONFIG)"
+DOPPLER_PROJECT="$DOPPLER_PROJECT" DOPPLER_CONFIG="$DOPPLER_CONFIG" APP_NAME="$APP_NAME" \
+  bash "$ROOT/deploy/fly/sync-secrets.sh"
 
 # ─── 4. Deploy ────────────────────────────────────────────────────────
-step "Deploy: fly deploy"
-cd "$(git rev-parse --show-toplevel)"
-fly deploy --config fly.toml --remote-only
+step "Deploy: fly deploy (remote builder)"
+cd "$ROOT"
+fly deploy --config fly.toml --remote-only \
+  --build-arg "BUILD_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
 
 # ─── 5. Post-deploy verify ────────────────────────────────────────────
 step "Verify: health + version"
@@ -133,8 +80,7 @@ APP_URL="https://${APP_NAME}.fly.dev"
 curl -sf -m 10 "${APP_URL}/health"  && echo
 curl -sf -m 10 "${APP_URL}/version" && echo || warn "/version not yet implemented — OK"
 
-step "Verify: JWKS reachable from inside the app"
-fly ssh console -a "$APP_NAME" -C "node -e 'fetch(process.env.JWKS_URL).then(r=>console.log(r.status))'" || \
-  warn "JWKS check failed — confirm mcp-approval2 is up and JWKS_URL is correct"
+step "Verify: readiness (DB + blob)"
+curl -s "${APP_URL}/health/ready" | jq . || warn "readiness check failed — see logs"
 
 step "Done — release deployed. Tail logs with: fly logs -a $APP_NAME"

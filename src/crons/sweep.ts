@@ -3,11 +3,19 @@
 import { and, eq, inArray, lt, sql } from 'drizzle-orm';
 import { withAdminTx } from '../db/client.ts';
 import { blobDeletionQueue, uploads } from '../db/schema.ts';
-import { blobStore } from '../adapters/blob/s3.ts';
+import { blobStore } from '../adapters/blob/index.ts';
 import { nowMs } from '../lib/ids.ts';
 import { logger } from '../lib/logger.ts';
 
 const PURGE_AFTER_MS = 60 * 60 * 1000; // 1h karenz after expiry
+
+// Hard cap for blob_deletion_queue retries. After 7 days of failed attempts
+// (typically attempts=8: 5m, 20m, 80m, 5.3h, 21h, 24h, 24h, 24h) the row
+// is given up on and removed from the queue. Prevents the queue from
+// growing without bound if the blob backend is permanently unavailable
+// or the key has already been deleted out-of-band.
+const BLOB_QUEUE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const BLOB_QUEUE_MAX_ATTEMPTS = 8;
 
 export async function sweepExpiredUploads(): Promise<void> {
   const now = nowMs();
@@ -60,6 +68,7 @@ export async function cleanupOrphanBlobs(): Promise<void> {
 
   let deleted = 0;
   let retried = 0;
+  let givenUp = 0;
   for (const row of due) {
     try {
       await blobStore().delete(row.blobKey);
@@ -69,6 +78,31 @@ export async function cleanupOrphanBlobs(): Promise<void> {
       deleted += 1;
     } catch (e) {
       const attempts = row.attempts + 1;
+      const enqueuedAt = row.enqueuedAt ?? row.nextAttemptAt;
+      const ageMs = now - enqueuedAt;
+
+      // Give-up: queue-row exceeded age or attempt cap. Drop it + emit an
+      // error-level log so the operator can investigate (the blob may be
+      // permanently inaccessible or already deleted out-of-band). Without
+      // this gate the queue would grow unbounded under sustained failures.
+      if (attempts >= BLOB_QUEUE_MAX_ATTEMPTS || ageMs >= BLOB_QUEUE_MAX_AGE_MS) {
+        await withAdminTx(async (db) => {
+          await db.delete(blobDeletionQueue).where(eq(blobDeletionQueue.id, row.id));
+        });
+        givenUp += 1;
+        logger.error(
+          {
+            err: e,
+            key: row.blobKey,
+            attempts,
+            ageMs,
+            cap: { attempts: BLOB_QUEUE_MAX_ATTEMPTS, ageMs: BLOB_QUEUE_MAX_AGE_MS },
+          },
+          'blob deletion queue: giving up after exhausting retries — manual cleanup may be needed',
+        );
+        continue;
+      }
+
       // Backoff: 5min, 30min, 2h, 8h, 24h, …
       const backoffMs = Math.min(5 * 60 * 1000 * Math.pow(4, attempts - 1), 24 * 60 * 60 * 1000);
       await withAdminTx(async (db) => {
@@ -85,5 +119,8 @@ export async function cleanupOrphanBlobs(): Promise<void> {
       logger.warn({ err: e, key: row.blobKey, attempts }, 'blob deletion retry scheduled');
     }
   }
-  logger.info({ deleted, retried, total: due.length }, 'blob deletion queue swept');
+  logger.info(
+    { deleted, retried, givenUp, total: due.length },
+    'blob deletion queue swept',
+  );
 }

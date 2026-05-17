@@ -1,6 +1,14 @@
 # PLAN — mcp-knowledge2 Architektur v2 (Konsolidierte Implementation-Spec)
 
-> **Status: ⚠️ DRAFT — Baseline für Phase 0-6, §1 Auth-Boundary durch AS-3 abgelöst (2026-05-15)**
+> **Status: ⚠️ DRAFT — Baseline für Phase 0-6, §1 Auth-Boundary durch AS-3 abgelöst (2026-05-15), §§2.1/3.5/5.2-5.4 durch ADR-0004 revidiert (2026-05-15)**
+>
+> ⚠️ **ADR-0004-Revision (2026-05-15):** Der `kind`-Diskriminator
+> (`doc | skill | app | memo`) wurde entfernt. Das Schema unten in
+> §2.1 (Z. 147, 201, 203, 244, 293), der AAD-Shape in §3.5 (Z. 531) und
+> die Search-Queries in §§5.2-5.4 (Z. 603/620/626/639/645/660) zeigen
+> noch den Pre-ADR-0004-Stand. Authoritative Spec für die heutige
+> Realität: [docs/adr/0004-generic-object-model.md](../../adr/0004-generic-object-model.md)
+> + [GENERIC-DATA-MODEL.md](../../../GENERIC-DATA-MODEL.md) v3.
 >
 > ⚠️ **AS-3-Hinweis (2026-05-15):** Der hier in §1 + §3.3 (KMS-Variante-B)
 > beschriebene Trust-Mechanismus (`JWT signed by mcp-approval2 → JWKS-verify`)

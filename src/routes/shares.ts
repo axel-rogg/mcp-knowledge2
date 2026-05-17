@@ -26,7 +26,6 @@ export const sharesRouter = new Hono()
     });
     await emitAudit({
       action: 'share.grant',
-      resourceKind: share.resourceKind,
       resourceId,
       result: 'success',
       details: { granted_to: b.granted_to, scope: b.scope },

@@ -19,7 +19,7 @@ this report.
 | MCP-Tool layer (`src/tools/**`, ~60 tools) | 60+ files | 🔄 **Deliberately not here** — lives in `mcp-approval2`. See §"Scope split". |
 | Apps-Subsystem (`src/apps/**` — blocks, types, action-router) | ~30 files | 🔄 **Deliberately not here** — Tool/UI-Surface, in `mcp-approval2`. |
 | MCP-Adapter (`src/routes/mcp.ts`, tool-registry, validate_schema) | ~5 files | 🔄 **Deliberately not here** — Protocol-Server in `mcp-approval2`. |
-| Skill helpers (`src/skills/api.ts`) — slug/group/version helpers | ~25 functions | 🔄 Skill-row CRUD migrated as `kind='skill'` on objects; skill-specific Tool-helpers belong in `mcp-approval2`. |
+| Skill helpers (`src/skills/api.ts`) — slug/group/version helpers | ~25 functions | 🔄 Skill-row CRUD migrated as `subtype='skill_manifest'` on objects (ADR-0004 generic object model); skill-specific Tool-helpers belong in `mcp-approval2`. |
 | Quality-Gate (`src/quality/`) | 2 files (~600 LOC) | ⚠️ Schema-ready (columns exist), code Phase 5+ |
 | **Genuine gaps fixed in this commit** | 3 items | ✅ See §"Gaps fixed" |
 
@@ -34,7 +34,7 @@ lives in `mcp-approval2`. The split is intentional and reflected
 | Old path | New home |
 |---|---|
 | `mcp-knowledge/src/objects/api.ts` | `mcp-knowledge2/src/storage/objects.ts` + `refs.ts` + `tags.ts` + `shares.ts` |
-| `mcp-knowledge/src/skills/api.ts` | Skill **storage** in `mcp-knowledge2` as `kind='skill'`. Skill **bundle logic** (manifest parsing, slug-resolution, hash diffing, group membership, resource attachment workflows) → `mcp-approval2/.../tools/skills/*` |
+| `mcp-knowledge/src/skills/api.ts` | Skill **storage** in `mcp-knowledge2` as `subtype='skill_manifest'` (ADR-0004 generic object model — no `kind` discriminator). Skill **bundle logic** (manifest parsing, slug-resolution, hash diffing, group membership, resource attachment workflows) → `mcp-approval2/.../tools/skills/*` |
 | `mcp-knowledge/src/apps/**` (blocks + types + action-router + legacy-to-layout) | `mcp-approval2/apps/server/src/apps/**` (we see the file `mcp-approval2/apps/server/src/apps/blocks/action_button.ts` already exists there) |
 | `mcp-knowledge/src/tools/**` (60+ tool implementations: docs.*, skills.*, memorize.*, apps.*, quality.*, objects.*) | `mcp-approval2/.../tools/**`. These wrap REST calls to the storage service. |
 | `mcp-knowledge/src/routes/mcp.ts` (MCP JSON-RPC adapter) | `mcp-approval2/.../mcp/**` |
@@ -131,10 +131,13 @@ All fixed in the same commit as this report:
 ### Gap 1 — Content-addressable deduplication
 - **Old:** `getObjectByBodyHash(env, kind, hash)` powered `docs.put`'s
   "if you upload the same bytes twice we return the existing id" feature.
-- **New:** Added `getObjectByBodyHash(kind, bodyHash): ObjectView | null`
-  to `storage/objects.ts`. RLS-scoped to caller so it cannot leak the
-  existence of another user's identical-hash row.
-- **Plus:** `getObjectByMeta(kind, metaKey, metaValue)` for the
+- **New (post ADR-0004):** Added
+  `getObjectByBodyHash(bodyHash, subtype?): ObjectView | null` to
+  `storage/objects.ts`. RLS-scoped to caller so it cannot leak the
+  existence of another user's identical-hash row. The legacy `kind`
+  argument is gone — callers pass an optional free-form `subtype`
+  instead.
+- **Plus:** `getObjectByMeta(metaKey, metaValue, subtype?)` for the
   `skills.attach_resource` style of "find by meta.slug" lookup. Key
   shape is regex-restricted to identifier-only to keep parametrisation
   safe.

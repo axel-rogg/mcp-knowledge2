@@ -8,7 +8,7 @@ import { errorHandler } from './middleware/error.ts';
 import { installContext } from './middleware/context.ts';
 import { idempotency } from './middleware/idempotency.ts';
 import { requestLog } from './middleware/request_log.ts';
-import { requireJwt } from './auth/jwt.ts';
+import { requireJwtOrOnBehalfOf } from './auth/require_jwt_or_obo.ts';
 import { requireServiceToken } from './auth/service_token.ts';
 import { healthRouter } from './routes/health.ts';
 import { objectsRouter } from './routes/objects.ts';
@@ -16,6 +16,9 @@ import { sharesRouter } from './routes/shares.ts';
 import { searchRouter } from './routes/search.ts';
 import { uploadsRouter } from './routes/uploads.ts';
 import { internalRouter } from './routes/internal.ts';
+import { oauthFacadeRouter } from './auth/oauth_facade/index.ts';
+import { mcpRouter } from './mcp/server.ts';
+import { registerAllTools } from './mcp/register_tools.ts';
 import { startCrons, stopCrons } from './crons/runner.ts';
 import { closeDbPools } from './db/client.ts';
 import { httpRequestCounter, httpRequestDuration } from './observability/metrics.ts';
@@ -75,9 +78,14 @@ app.notFound((c) =>
 // ─── Public ────────────────────────────────────────────────────────────────
 app.route('/', healthRouter);
 
-// ─── User-Auth (JWT from mcp-approval2) ────────────────────────────────────
+// ─── OAuth-facade (Discovery + DCR + JWKS + /oauth/*) ─────────────────────
+// Spec: PLAN-as3-autonomous.md §1.1. Public endpoints — auth happens
+// per-endpoint inside the facade (Google-redirect for /authorize, etc.).
+app.route('/', oauthFacadeRouter);
+
+// ─── User-Auth: own JWT OR approval2 OBO (AS-3 K8) ─────────────────────────
 const v1 = new Hono();
-v1.use('*', requireJwt);
+v1.use('*', requireJwtOrOnBehalfOf);
 v1.use('*', installContext);
 v1.use('*', idempotency);
 v1.route('/', objectsRouter);
@@ -95,13 +103,23 @@ internal.route('/', internalRouter);
 
 app.route('/v1', internal);
 
+// ─── MCP Streamable-HTTP (AS-3 K10) ────────────────────────────────────────
+// Tools are registered on import — see register_tools.ts (K11).
+registerAllTools();
+app.route('/', mcpRouter);
+
 // ─── Bootstrap ─────────────────────────────────────────────────────────────
 async function main() {
   const env = loadEnv();
-  await startCrons();
   const port = env.PORT;
+  // Start the HTTP listener BEFORE pg-boss boots so /health and /version
+  // respond immediately on cold-start. pg-boss.start() can take 1-5s against
+  // a freshly-attached Postgres, which used to push us past Fly's 10s health
+  // grace-period. /health/ready stays the gate for "ready to serve traffic".
   const server = serve({ fetch: app.fetch, port, hostname: '0.0.0.0' });
   logger.info({ port, env: env.NODE_ENV }, 'mcp-knowledge2 listening');
+  await startCrons();
+  logger.info('crons started');
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');

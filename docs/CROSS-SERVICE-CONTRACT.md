@@ -40,7 +40,7 @@ This document closes the loop by enumerating:
 |-----------------------|-------------------------------------------------|--------|--------|
 | `createObject`        | `POST   /v1/objects`                            | JWT    | live   |
 | `getObject`           | `GET    /v1/objects/{id}`                       | JWT    | live   |
-| `listObjects`         | `GET    /v1/objects?kind=&limit=&cursor=`       | JWT    | live   |
+| `listObjects`         | `GET    /v1/objects?subtype=&limit=&cursor=`    | JWT    | live   |
 | `updateObject`        | `PATCH  /v1/objects/{id}`                       | JWT    | live   |
 | `deleteObject`        | `DELETE /v1/objects/{id}` (soft)                | JWT    | live   |
 | `createShare`         | `POST   /v1/objects/{id}/shares`                | JWT    | live   |
@@ -64,7 +64,7 @@ mcp-approval2 will adopt incrementally — adapter-extension is tracked in
 - Adapter signs a 60s-TTL JWT per request via injected `JwtSigner`.
 - Server validates against JWKS (`env.JWKS_URL`, 24h cache, refresh-on-miss).
 - Required claim: `sub` = UUID-v4 of the user (NOT email).
-- Optional claim: `scope` = space-separated string (e.g. `"docs:write skills:read"`).
+- Optional claim: `scope` = space-separated string (e.g. `"objects:read objects:write"`).
 - Header form: `Authorization: Bearer <jwt>`.
 - Server propagates `X-Request-Id` (sets new one if absent); adapter sends
   one per call via `requestIdFactory` (default = `crypto.randomUUID`).
@@ -88,7 +88,6 @@ mcp-approval2 will adopt incrementally — adapter-extension is tracked in
 {
   "id": "uuid",
   "ownerId": "uuid",
-  "kind": "doc|skill|app|memo",
   "subtype": "string|null",
   "title": "string|null",
   "description": "string|null",
@@ -133,7 +132,6 @@ Cursor is **integer** (= last item's `updatedAt`), not opaque string.
 ```json
 {
   "id": "uuid",
-  "resourceKind": "doc|skill|app",
   "resourceId": "uuid",
   "grantedTo": "uuid",
   "grantedBy": "uuid",
@@ -149,7 +147,6 @@ Cursor is **integer** (= last item's `updatedAt`), not opaque string.
 ```json
 {
   "id": "uuid",
-  "kind": "doc|skill|app|memo",
   "subtype": "string|null",
   "title": "string|null",
   "score": 0.42,
@@ -224,15 +221,17 @@ Each drift is keyed `D-<n>` for follow-up tickets.
   for ObjectView fields but snake_case for envelope keys. Keep the
   server style; adapter conforms.
 
-### D-6 — `createShare` request body field names + missing `resourceKind` (HIGH)
+### D-6 — `createShare` request body field names (HIGH)
 
-- **Adapter** sends `{ resourceKind, grantedTo, scope }`.
-- **Server** accepts `{ granted_to, scope, expires_at? }` — `resourceKind`
-  is derived server-side from the object's row, not from the body.
-- **Effect:** zod parse fails: extra unknown key `resourceKind`,
-  required key `granted_to` missing.
+- **Adapter** sends `{ grantedTo, scope }`.
+- **Server** accepts `{ granted_to, scope, expires_at? }`. With ADR-0004
+  (generic object model) the legacy `resourceKind` field is gone from
+  both wire and DB — the object's row is sufficient context for the
+  server to authorise the share.
+- **Effect:** zod parse fails: required key `granted_to` missing
+  (pre-ADR-0004 also rejected the extra `resourceKind` field).
 - **Fix:** AP — adapter should send `{ granted_to: args.grantedTo, scope:
-  args.scope }`. Drop `resourceKind` (server infers).
+  args.scope }`.
 
 ### D-7 — `Share` field `createdAt` vs `grantedAt` (LOW)
 
@@ -246,15 +245,14 @@ Each drift is keyed `D-<n>` for follow-up tickets.
 - **Server** wraps in `{ items: [...] }`.
 - **Fix:** AP — change parsing to `(res as {items: Share[]}).items`.
 
-### D-9 — `search` request: `kinds: string[]` vs `kind: string` (HIGH)
+### D-9 — `search` request: subtype filter shape (RESOLVED via ADR-0004)
 
-- **Adapter** sends `{ kinds: ['doc', 'skill'], limit }`.
-- **Server** accepts single `kind: 'doc'|'skill'|'app'|'memo'` only.
-- **Effect:** zod-parse rejects multi-kind queries.
-- **Fix:** BOTH — short-term AP collapses to first kind (or omits when
-  multi). Long-term KS: extend server `SearchBody` to accept
-  `kind: ObjectKind | ObjectKind[]` and filter accordingly.
-  See follow-up `T-search-multi-kind`.
+- **Adapter** historically sent `{ kinds: ['doc', 'skill'], limit }`.
+- **Server** today (post ADR-0004) accepts
+  `{ subtypes?: string[], limit }` — free-form subtype array, no enum.
+- **Effect (pre-ADR-0004):** zod-parse rejected multi-kind queries.
+- **Fix:** AP — send `{ subtypes: ['doc', 'skill_manifest'] }` (or omit
+  entirely for unfiltered). Old `kind` / `kinds` keys are dropped.
 
 ### D-10 — `eraseUser` (HIGH)
 
@@ -296,16 +294,17 @@ conforms.** Server schema is already shipped and migrations are
 non-trivial to rename. Wire-DTO renames in adapter `types.ts` are local
 TS-only changes.
 
-Exceptions (drifts that need server-side changes):
-- D-9 (multi-kind search) — server-side accept-list extension.
+Exceptions: none — D-9 was resolved by ADR-0004 (the server now accepts
+`subtypes: string[]`, see GENERIC-DATA-MODEL.md v3 §4.10).
 
 Sequencing:
 1. mcp-knowledge2 lands no functional changes from this contract; it
    only documents and ships the integration-test harness (this commit).
 2. mcp-approval2 lands adapter fixes for D-1 .. D-8, D-10, D-11, D-12 in
    a follow-up burst (call it Burst 4b or 5a — owner-side decides).
-3. D-9 is queued as a joint follow-up after the first end-to-end
-   integration smoke passes with single-kind search.
+3. D-9 is closed by ADR-0004: subtype-array filter is the canonical
+   wire-format. Cross-repo migration tracked in
+   GENERIC-DATA-MODEL.md v3 §11.
 
 ---
 
