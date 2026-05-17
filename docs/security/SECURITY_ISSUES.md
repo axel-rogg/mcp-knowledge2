@@ -1,6 +1,6 @@
 # Security Issues — mcp-knowledge2
 
-**Stand:** 2026-05-17
+**Stand:** 2026-05-17 (Multi-User-Sprint abgeschlossen)
 **Auditor:** Claude (Opus 4.7), user-initiated review pre-cutover
 **Branch:** `feat/as3-cutover` (Schwester-Repo) / `main`
 **Scope:** Access-Control / Auth / Crypto / RLS / Trust-Boundary — keine reine Code-Quality
@@ -8,10 +8,24 @@
 > Lebende Findings-Liste. Komplementär zu [`SECURITY.md`](./SECURITY.md) (Threat-Model).
 > Jeder CRITICAL/HIGH-Befund wurde direkt am Code (file:line) verifiziert.
 
+## Sprint-Stand 2026-05-17 (compact)
+
+| Severity | Total | ✅ Fixed | ⏸ Deferred | Heutige Deploys |
+|---|---|---|---|---|
+| CRITICAL | 7 (inkl. SEC-K-NEW) | 6 | 1 (K-004) | K-001 K-002 K-003 K-005 K-006 K-NEW |
+| HIGH | 24 | 17 | 7 | K-009 K-010 K-011 K-012 K-013 K-014 K-015 K-016 K-017 K-018 K-023 K-024 + 5 weitere |
+| MEDIUM | 6 | 4 | 2 | K-031 K-033 K-034 K-035 |
+
+**Operator-Pending (heutige Deploys aktivieren):**
+- `tsx scripts/re-encrypt-dek-v2.ts` → SEC-K-005 Step B aktiviert (existing user v1→v2)
+- Doppler `SERVICE_TOKEN_ERASE/SYNC/OPS` (KC2 + approval2) → SEC-K-009 aktiviert
+- Doppler `REQUIRE_ERASE_RECEIPT=true` → SEC-K-016 enforced (legacy fallback off)
+
 ---
 
 ## Inhalt
 
+- [Sprint-Stand 2026-05-17](#sprint-stand-2026-05-17-compact)
 - [Top-Recommendation: Lockdown auf Fly Private Network](#lockdown)
 - [Legende](#legende)
 - [CRITICAL](#critical)
@@ -48,11 +62,11 @@
 - Reduziert SEC-K-006 (SERVICE_TOKEN admin-equivalent) drastisch — Token-Leak ohne Network-Access wirkungslos
 
 **Was es NICHT fixt** — diese Findings sind code-level und bleiben:
-- SEC-K-001 (OBO-`on_behalf_of` ungebunden)
-- SEC-K-002 (`MCP_APPROVAL_JWKS_URL` no host-allowlist)
-- SEC-K-004 (object_revisions AAD-mismatch)
-- SEC-K-005 (HKDF-Salt = plain userId)
-- SEC-K-006 (UserSync-Email-key trust)
+- SEC-K-001 (OBO-`on_behalf_of` ungebunden) → ✅ post-Lockdown via aa6f135 (siehe Tabelle)
+- SEC-K-002 (`MCP_APPROVAL_JWKS_URL` no host-allowlist) → ✅ c9ea921
+- SEC-K-004 (object_revisions AAD-mismatch) → ⏸ deferred
+- SEC-K-005 (HKDF-Salt = plain userId) → ✅ f68111d (Step A + B)
+- SEC-K-006 (UserSync-Email-key trust) → ✅ 6aae205
 - alle Crypto/AAD-Befunde
 - alle Refresh/Auth-Code-Race-Befunde
 
@@ -180,7 +194,8 @@
   2. HKDF-Salt: `salt = userId || dek_salt`.
   3. Bei GDPR-Erase: `UPDATE users SET dek_salt = '\x00...' WHERE id = $1` UND alle existierenden DEK-encrypted Bodies neu-encrypten ist unnötig — Tombstone reicht, weil ohne Salt der DEK nicht mehr derivierbar ist.
   4. Backward-Compat: bei NULL/zero-Salt-Rows alten HKDF-Pfad als Fallback; Migration cron-job re-encryptet schrittweise.
-- **Status:** ⏸ DEFERRED Multi-User-Pre-Cutover. Solo-Pilot single-user → kein Cross-User-Crypto-Shredding-Bedarf. Fix verlangt `users.dek_salt`-Migration + lazy re-derive across all encrypted bodies. Multi-step careful Migration.
+- **Status:** ✅ FIXED 2026-05-17 (Step A: 985d7a5 Migration 0015 `users.dek_salt BYTEA + dek_salt_version`; Step B: f68111d HKDF `salt=userId||dek_salt, info='dek-v2'` in [src/adapters/kms/hkdf_local.ts](../../src/adapters/kms/hkdf_local.ts) + [src/adapters/kms/cloud_kms.ts](../../src/adapters/kms/cloud_kms.ts), per-user state-loader in [src/users/dek_state.ts](../../src/users/dek_state.ts), Re-Encrypt-CLI in [scripts/re-encrypt-dek-v2.ts](../../scripts/re-encrypt-dek-v2.ts)). Migrations-Pfad: neue User starten via Drizzle-`$defaultFn` direkt auf v2; existing solo-pilot user via Re-Encrypt-Script (DRY_RUN=1 erst) auf v2 bumpen.
+- **Operator-Activate-Step:** Service stoppen → `DRY_RUN=1 tsx scripts/re-encrypt-dek-v2.ts` → echt durchziehen → Service hochfahren.
 
 ### SEC-K-006 — `/v1/internal/users/sync` trusts every claim from approval2 → privilege channel via Email-collision
 
@@ -207,14 +222,14 @@
 |---|---|---|
 | SEC-K-007 | ⏸ DEFERRED — würde Claude.ai-MCP-Connect blocken wenn KC2 später re-public wird. Hostname-Allowlist statt blanket-reject. | — |
 | SEC-K-008 | ⏸ DEFERRED — gleicher Defer-Kontext wie 007 (localhost-redirect für native MCP-Clients legit). | — |
-| SEC-K-009 | ⏸ DEFERRED — Cross-Repo Service-Token-Split braucht approval2-side change in Knowledge-Adapter. | — |
+| SEC-K-009 | ✅ FIXED — `requireServiceToken(scope)` per-route mit SERVICE_TOKEN_ERASE/SYNC/OPS, legacy SERVICE_TOKEN als Migrations-Fallback. Cross-Repo: approval2 9c4813f. | 19b60f8 |
 | SEC-K-010 | ✅ FIXED — Migration 0013 + obo_jti_seen table + INSERT-on-Conflict-Replay-Detect. Sweep-Cron alle 5 min. | (siehe SEC-K-010-Section unten) |
 | SEC-K-011 | ✅ FIXED — JWKS_CACHE_TTL_SECONDS 86400s → 600s. | d7d2e21 |
 | SEC-K-012 | ✅ FIXED — consumeAuthCode mit .returning() + race-detect. | d7d2e21 |
 | SEC-K-013 | ✅ FIXED — SELECT FOR UPDATE + Family-Revoke traverse rotatedTo-Chain. | aa6f135 |
 | SEC-K-014 | ✅ FIXED — MAX_UPLOAD_BYTES 5GB → 64MB. | ea2ed88 |
 | SEC-K-015 | ✅ ELIMINIERT — /metrics ist post-Lockdown nicht mehr public. | d414604 |
-| SEC-K-016 | ⏸ DEFERRED — wie 009, Cross-Repo HMAC-Token. | — |
+| SEC-K-016 | ✅ FIXED — `x-erase-receipt`-JWS-Header mit `payload.sub === body.user_id` + jti-replay-protection via obo_jti_seen. REQUIRE_ERASE_RECEIPT-flag-gated. Cross-Repo: approval2 9c4813f signed receipt. | 19b60f8 |
 | SEC-K-017 | ✅ FIXED — Admin-Row-Auto-Claim-Guard im provisionFromGoogleLogin. | ea2ed88 |
 | SEC-K-018 | ✅ FIXED — userRateLimit({600,/v1}, {300,/mcp}) mit ctx.userId-keying. | (commit nach Batch-5) |
 | SEC-K-019 | ⏸ DEFERRED — Backup-Key-ID Dual-Window verlangt sauberes Format-Migration. | — |
