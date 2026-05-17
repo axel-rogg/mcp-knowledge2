@@ -410,6 +410,17 @@ export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
   revokedAt: bigint('revoked_at', { mode: 'number' }),
 });
 
+// SEC-K-010: OBO jti-Replay-Protection. INSERT-on-Conflict im
+// require_jwt_or_obo-middleware-path verhindert dass derselbe OBO-Token
+// innerhalb seines Expiry-Windows (120s default) ein zweites Mal akzeptiert
+// wird. TTL-Sweep über exp_at-Index.
+export const oboJtiSeen = pgTable('obo_jti_seen', {
+  jti: text('jti').primaryKey(),
+  userId: uuid('user_id').notNull(),
+  seenAt: bigint('seen_at', { mode: 'number' }).notNull(),
+  expAt: bigint('exp_at', { mode: 'number' }).notNull(),
+});
+
 // ─── Re-exported helpers ───────────────────────────────────────────────────
 
 export const schema = {

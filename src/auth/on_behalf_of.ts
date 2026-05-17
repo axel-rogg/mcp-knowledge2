@@ -32,6 +32,8 @@ import { logger } from '../lib/logger.ts';
 import { resolveByEmail, resolveByGoogleSub } from '../users/api.ts';
 import type { AuthMode, RequestContext } from '../types/domain.ts';
 import { isUuid, uuidV4 } from '../lib/ids.ts';
+import { withAdminTx } from '../db/client.ts';
+import { oboJtiSeen } from '../db/schema.ts';
 
 const ALLOWED_JWT_ALGORITHMS = ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'EdDSA'] as const;
 
@@ -162,6 +164,41 @@ export async function verifyOnBehalfOf(args: {
   if (typeof payload.approval_id === 'string') {
     if (!isUuid(payload.approval_id)) throw errBadRequest('approval_id must be a UUID');
     approvalId = payload.approval_id;
+  }
+
+  // SEC-K-010: jti-Replay-Protection. payload.jti wird von approval2's
+  // signOBO mit randomUuid() gesetzt. Wir tracken pro JTI dass es schon
+  // gesehen wurde via INSERT-ON-CONFLICT. PK-Conflict = Replay → 401.
+  // exp_at = payload.exp (Token-Expiry) + 60s grace fuer Sweep-Cron.
+  const jti = typeof payload.jti === 'string' ? payload.jti : null;
+  const exp = typeof payload.exp === 'number' ? payload.exp : null;
+  if (jti && exp) {
+    const insertResult = await withAdminTx(async (db) => {
+      return db
+        .insert(oboJtiSeen)
+        .values({
+          jti,
+          userId: user.id,
+          seenAt: Math.floor(Date.now() / 1000),
+          expAt: exp + 60,
+        })
+        .onConflictDoNothing({ target: oboJtiSeen.jti })
+        .returning({ jti: oboJtiSeen.jti });
+    });
+    if (insertResult.length === 0) {
+      logger.warn(
+        { kcUserId: user.id, jti, oboSub: payloadSub },
+        'OBO jti replay detected — refusing',
+      );
+      throw errUnauthorized('OBO jti replay detected (SEC-K-010)');
+    }
+  } else {
+    // Tokens ohne jti/exp wären protokollfremd; approval2 setzt beide
+    // verpflichtend. Log + accept fuer Backward-Compat.
+    logger.warn(
+      { hasJti: !!jti, hasExp: !!exp },
+      'OBO missing jti or exp — replay-check skipped (legacy approval2?)',
+    );
   }
 
   const requestId =

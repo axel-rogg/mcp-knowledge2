@@ -45,9 +45,16 @@ export async function initUpload(input: InitUploadInput): Promise<InitUploadResu
   const now = nowMs();
   const expiresAt = now + UPLOAD_TTL_MS;
 
+  // SEC-K-038: Force ContentType auf application/octet-stream beim Presign.
+  // Caller-Input wuerde sonst zu R2 durchgereicht; ein zukuenftiger
+  // presign_get-Pfad koennte text/html+JS-Body als active content im
+  // Browser ausfuehren. Da die Blob-Bodies eh AES-GCM-encrypted sind +
+  // erst nach finalize/decrypt sinnvoll, ist octet-stream der einzige
+  // korrekte Typ. input.contentType wird in meta_json gespeichert wenn
+  // der Caller's Hint im PWA noetig ist.
   const presigned = await blobStore().presignPut(blobKey, {
     expiresInSeconds: Math.floor(UPLOAD_TTL_MS / 1000),
-    contentType: input.contentType,
+    contentType: 'application/octet-stream',
   });
 
   await withUserTx(ctx.userId, ctx.requestId, async (db) => {

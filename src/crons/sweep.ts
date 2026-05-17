@@ -2,7 +2,7 @@
 
 import { and, eq, inArray, lt, sql } from 'drizzle-orm';
 import { withAdminTx } from '../db/client.ts';
-import { blobDeletionQueue, uploads } from '../db/schema.ts';
+import { blobDeletionQueue, oboJtiSeen, uploads } from '../db/schema.ts';
 import { blobStore } from '../adapters/blob/index.ts';
 import { nowMs } from '../lib/ids.ts';
 import { logger } from '../lib/logger.ts';
@@ -27,6 +27,24 @@ export async function sweepExpiredUploads(): Promise<void> {
       .returning({ id: uploads.id });
   });
   if (updated.length > 0) logger.info({ count: updated.length }, 'uploads sweep: expired pending');
+}
+
+/**
+ * SEC-K-010: räumt obo_jti_seen-Rows ab deren exp_at überschritten ist.
+ * Token sind 120s lebendig + 60s grace = 180s im Worst-Case. Reine
+ * Replay-Detection braucht das row nicht laenger.
+ */
+export async function sweepOboJtiSeen(): Promise<void> {
+  // exp_at ist in Sekunden (UNIX-time), nowMs() ist Millisekunden — Compare
+  // gegen now-Seconds.
+  const nowSec = Math.floor(Date.now() / 1000);
+  const deleted = await withAdminTx(async (db) => {
+    return db
+      .delete(oboJtiSeen)
+      .where(lt(oboJtiSeen.expAt, nowSec))
+      .returning({ jti: oboJtiSeen.jti });
+  });
+  if (deleted.length > 0) logger.info({ count: deleted.length }, 'obo_jti_seen sweep: expired');
 }
 
 export async function purgeExpiredUploads(): Promise<void> {

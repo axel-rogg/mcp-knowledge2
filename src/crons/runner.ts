@@ -6,7 +6,7 @@
 import PgBoss from 'pg-boss';
 import { loadEnv } from '../types/env.ts';
 import { logger } from '../lib/logger.ts';
-import { sweepExpiredUploads, purgeExpiredUploads, cleanupOrphanBlobs } from './sweep.ts';
+import { sweepExpiredUploads, purgeExpiredUploads, cleanupOrphanBlobs, sweepOboJtiSeen } from './sweep.ts';
 import { gcIdempotency } from './idempotency_gc.ts';
 import { runBackup } from './backup.ts';
 
@@ -34,6 +34,7 @@ export async function startCrons(): Promise<PgBoss> {
     'idempotency.gc',
     'backup.daily',
     'blobs.cleanup_orphans',
+    'obo_jti.sweep',
   ];
   for (const q of queues) {
     await bossInstance.createQueue(q);
@@ -44,6 +45,7 @@ export async function startCrons(): Promise<PgBoss> {
   await bossInstance.work('idempotency.gc', gcIdempotency);
   await bossInstance.work('backup.daily', runBackup);
   await bossInstance.work('blobs.cleanup_orphans', cleanupOrphanBlobs);
+  await bossInstance.work('obo_jti.sweep', sweepOboJtiSeen);
 
   // Schedule
   await bossInstance.schedule('uploads.sweep_expired', '*/30 * * * *');
@@ -51,6 +53,9 @@ export async function startCrons(): Promise<PgBoss> {
   await bossInstance.schedule('idempotency.gc', '0 * * * *');
   await bossInstance.schedule('backup.daily', '0 3 * * *');
   await bossInstance.schedule('blobs.cleanup_orphans', '0 6 * * 0');
+  // SEC-K-010: jti-Replay-Records expirieren nach 180s (Token-Expiry +
+  // 60s grace). Alle 5 min reichen — kein Backlog wird langlebig.
+  await bossInstance.schedule('obo_jti.sweep', '*/5 * * * *');
 
   logger.info('cron schedules registered');
   return bossInstance;
