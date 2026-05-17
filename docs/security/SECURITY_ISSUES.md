@@ -72,6 +72,29 @@
 
 ## CRITICAL <a id="critical"></a>
 
+### SEC-K-NEW — `share_grants` RLS: forged self-INSERT umgeht Ownership-Check
+
+- **File:** [drizzle/migrations/0001_rls.sql:90-108](../../drizzle/migrations/0001_rls.sql#L90-L108)
+- **Symptom:** Zwei PERMISSIVE-Policies auf share_grants:
+  ```sql
+  CREATE POLICY grants_self ON share_grants  -- FOR ALL
+    USING (granted_to = current OR granted_by = current);
+  CREATE POLICY grants_insert_by_owner ON share_grants FOR INSERT
+    WITH CHECK (granted_by = current AND EXISTS owners_check);
+  ```
+  PostgreSQL OR'd PERMISSIVE-Policies → ein INSERT passiert wenn ENTWEDER die WITH CHECK der ersten ODER der zweiten true ist. User B mit `granted_by=B` (self) erfüllt grants_self, die strenge Ownership-Klausel von grants_insert_by_owner wird umgangen.
+- **Exploit:** User B macht
+  ```sql
+  INSERT INTO share_grants (resource_id, granted_to, granted_by, scope, ...)
+  VALUES ('<A''s-doc-id>', B, B, 'read', ...)
+  ```
+  Anschliessend lookupt `objects.owner_or_shared_read` share_grants nach `granted_to=B` und liefert A's doc als sichtbar → B liest A's encrypted data (RLS-Bypass, DEK-derivation hängt am OBO-Header, hier weniger relevant).
+- **Mitigation heute:** app-layer `createShare()` ([src/storage/shares.ts:34-47](../../src/storage/shares.ts#L34-L47)) prüft `obj.ownerId !== ctx.userId → 403`. Solange alle Schreibwege durch `createShare()` gehen, ist der Bypass nicht reachable.
+- **Risiko:** RLS ist die letzte Linie. Eine neue Route, ein Bug in `createShare`, oder eine Migration die share_grants direkt schreibt → Tenant-Boundary kippt.
+- **Fix:** Migration 0016 ersetzt `grants_insert_by_owner` (PERMISSIVE) durch `grants_insert_owner_required` (RESTRICTIVE). RESTRICTIVE wird AND'd mit PERMISSIVE → beide WITH CHECKs müssen passen → forged-INSERT blocked.
+- **Status:** ✅ FIXED 2026-05-17 (commit 91b1786). Migration 0016 deployed. Test in [tests/integration/rls.test.ts](../../tests/integration/rls.test.ts) verifiziert blocking + grantee-decline weiterhin funktioniert.
+- **Discovered:** Via rls.test.ts-Erweiterung (commit f23bd5a) — perfect example warum die Test-Erweiterung von Multi-User-Plan §4.3 critical war.
+
 ### SEC-K-001 — OBO `on_behalf_of` ist ungebunden zum JWT-`sub` → approval2 kann jeden User impersonieren
 
 - **File:** [src/auth/on_behalf_of.ts:108-127](../../src/auth/on_behalf_of.ts#L108-L127)
