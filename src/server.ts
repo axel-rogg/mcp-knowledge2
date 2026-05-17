@@ -7,6 +7,7 @@ import { logger } from './lib/logger.ts';
 import { errorHandler } from './middleware/error.ts';
 import { installContext } from './middleware/context.ts';
 import { idempotency } from './middleware/idempotency.ts';
+import { userRateLimit } from './middleware/rate_limit.ts';
 import { requestLog } from './middleware/request_log.ts';
 import { requireJwtOrOnBehalfOf } from './auth/require_jwt_or_obo.ts';
 import { requireServiceToken } from './auth/service_token.ts';
@@ -87,6 +88,11 @@ app.route('/', oauthFacadeRouter);
 const v1 = new Hono();
 v1.use('*', requireJwtOrOnBehalfOf);
 v1.use('*', installContext);
+// SEC-K-018: Per-User-Rate-Limit. 600 req/min/user — generös für legit
+// Workflow (PWA-Prefetch + batched MCP-Calls + Background-Refresh), kappt
+// aber Embedding-Loop-DoS und batched-tools-Burn. Geht NACH context-install
+// damit ctx.userId verfügbar ist.
+v1.use('*', userRateLimit({ windowMs: 60_000, max: 600, name: '/v1' }));
 v1.use('*', idempotency);
 v1.route('/', objectsRouter);
 v1.route('/', sharesRouter);
@@ -105,8 +111,15 @@ app.route('/v1', internal);
 
 // ─── MCP Streamable-HTTP (AS-3 K10) ────────────────────────────────────────
 // Tools are registered on import — see register_tools.ts (K11).
+// SEC-K-018: separater Rate-Limit-Bucket fuer /mcp (selbe Per-User-Logik,
+// aber eigene Counter — MCP-tools/list-Batches sind eigene Workload).
+// Limit 300/min/user — etwas strenger als /v1 weil MCP-Calls oft mehr
+// Embedding/Vector-Cost pro Call haben.
 registerAllTools();
-app.route('/', mcpRouter);
+const mcpScope = new Hono();
+mcpScope.use('*', userRateLimit({ windowMs: 60_000, max: 300, name: '/mcp' }));
+mcpScope.route('/', mcpRouter);
+app.route('/', mcpScope);
 
 // ─── Bootstrap ─────────────────────────────────────────────────────────────
 

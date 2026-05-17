@@ -19,14 +19,22 @@
 
 import type { MiddlewareHandler } from 'hono';
 import { errTooManyRequests } from '../lib/errors.ts';
+import type { RequestContext } from '../types/domain.ts';
 
 export interface RateLimitOptions {
   /** Window length in milliseconds. */
   windowMs: number;
-  /** Max requests per IP per window. */
+  /** Max requests per key per window. */
   max: number;
   /** Logical bucket name, used in error detail. */
   name: string;
+  /**
+   * Optional key-resolver — default = IP-based. SEC-K-018: für authentifizierte
+   * Routes liefert userKeyResolver(c) den ctx.userId als Bucket-Key, sodass
+   * approval2-Egress-IPs nicht per-IP geteilt werden (alle approval2-Calls
+   * teilen sich die EINE IP).
+   */
+  keyResolver?: (c: Parameters<MiddlewareHandler>[0]) => string;
 }
 
 /**
@@ -51,9 +59,10 @@ export function rateLimit(opts: RateLimitOptions): MiddlewareHandler {
   // Module-scoped store. One Map per limiter-instance, so different routes
   // (e.g. /oauth/register vs /oauth/authorize) don't share counters.
   const store = new Map<string, number[]>();
+  const keyOf = opts.keyResolver ?? resolveClientIp;
 
   return async (c, next) => {
-    const ip = resolveClientIp(c);
+    const ip = keyOf(c);
     const now = Date.now();
     const windowStart = now - opts.windowMs;
 
@@ -76,6 +85,28 @@ export function rateLimit(opts: RateLimitOptions): MiddlewareHandler {
     store.set(ip, fresh);
     await next();
   };
+}
+
+/**
+ * SEC-K-018: Per-User-Rate-Limit für authentifizierte Routes (/v1/* + /mcp).
+ * Greift erst NACH auth-middleware (sonst ist ctx.userId noch nicht gesetzt).
+ * Fallback auf IP wenn ctx fehlt (z.B. early-401-Pfade).
+ *
+ * Default-Bucket: 600 req/min/user — generös für legit Workflow-Bursts
+ * (PWA-Prefetch, batched MCP-tools/list), kappt aber unbounded Loops
+ * (Embedding-Cost-Explosion, batched-tools-DoS).
+ */
+export function userRateLimit(opts: { windowMs: number; max: number; name: string }): MiddlewareHandler {
+  return rateLimit({
+    ...opts,
+    keyResolver: (c) => {
+      const ctx = c.get('ctx') as RequestContext | undefined;
+      if (ctx?.userId) return `user:${ctx.userId}`;
+      // Fallback auf IP fuer not-yet-auth'd Calls. Trennt user-keyed buckets
+      // sauber von ip-keyed (different namespace).
+      return `ip:${resolveClientIp(c)}`;
+    },
+  });
 }
 
 /**
