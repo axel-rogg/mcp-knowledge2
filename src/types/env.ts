@@ -71,12 +71,58 @@ const EnvSchema = z.object({
     .string()
     .default('')
     .transform((s) => s.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean)),
-  GOOGLE_JWKS_URL: z.string().url().default('https://www.googleapis.com/oauth2/v3/certs'),
+  // JWKS-URL fuer Google-OIDC ID-Token-Verify. Allowlist auf Google-Hosts
+  // (defense-in-depth: ein leaked Fly-API-Token + Doppler-write koennte
+  // sonst auf attacker-controlled JWKS umlenken — SEC-K-002).
+  GOOGLE_JWKS_URL: z
+    .string()
+    .url()
+    .default('https://www.googleapis.com/oauth2/v3/certs')
+    .refine(
+      (u) => {
+        try {
+          const url = new URL(u);
+          if (url.protocol !== 'https:') return false;
+          return ['www.googleapis.com', 'accounts.google.com'].includes(url.hostname);
+        } catch {
+          return false;
+        }
+      },
+      { message: 'GOOGLE_JWKS_URL must be https on www.googleapis.com or accounts.google.com' },
+    ),
   GOOGLE_ISSUER: z.string().default('https://accounts.google.com'),
 
   // OBO (K7): approval2 forwards calls with a signed JWT from its facade.
   // Optional — when unset, the OBO middleware refuses (no proxy mode).
-  MCP_APPROVAL_JWKS_URL: z.string().url().optional(),
+  // Allowlist auf approval2-eigene Hostnames (siehe SEC-K-002): Misconfig in
+  // Doppler/Fly waere sonst forge-all-Pfad fuer beliebige Tokens.
+  MCP_APPROVAL_JWKS_URL: z
+    .string()
+    .url()
+    .refine(
+      (u) => {
+        try {
+          const url = new URL(u);
+          if (url.protocol !== 'https:') return false;
+          const allowed = [
+            'mcp-approval2.fly.dev',
+            'mcp-approval2.flycast',
+            'mcp2.ai-toolhub.org',
+            'app2.ai-toolhub.org',
+          ];
+          if (!allowed.includes(url.hostname)) return false;
+          // Path muss /.well-known/jwks.json sein
+          return url.pathname === '/.well-known/jwks.json';
+        } catch {
+          return false;
+        }
+      },
+      {
+        message:
+          'MCP_APPROVAL_JWKS_URL must be https on approval2-Host (mcp-approval2.{fly.dev|flycast}, {mcp2,app2}.ai-toolhub.org) with path /.well-known/jwks.json',
+      },
+    )
+    .optional(),
   MCP_APPROVAL_ISSUER: z.string().default('mcp-approval2'),
 
   SERVICE_TOKEN: z.string().min(32),
