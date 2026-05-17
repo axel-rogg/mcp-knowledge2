@@ -18,12 +18,15 @@ import { emitAudit } from '../observability/audit.ts';
 import { requireContext } from '../lib/context.ts';
 import { errBadRequest } from '../lib/errors.ts';
 
-// Inline-body cap: 16 KB binary ≈ 22 KB base64. Any larger upload MUST go
+// Inline-body cap: 256 KB binary ≈ 350 KB base64. Any larger upload MUST go
 // through the presigned-upload pipeline (POST /v1/uploads/init) so the
 // server is not asked to materialise the entire body in memory from a
-// single JSON request. The 22 KB max here is a defense against
-// JSON-bomb-style RAM exhaustion (F-2 in the 2026-05-13 audit).
-const INLINE_BODY_INPUT_MAX_B64 = 22 * 1024;
+// single JSON request. Cap dient als Defense gegen JSON-bomb-style RAM
+// exhaustion (F-2 in 2026-05-13 audit). 2026-05-17: 22KB → 350KB.
+// Begruendung: Skill-Manifests im Bestand sind teils 18KB, Markdown-
+// Tutorials oft 50-100KB. 350KB base64 × 100 concurrent ≈ 35MB Memory —
+// shared-cpu-1x mit 512MB hat genuegend Headroom.
+const INLINE_BODY_INPUT_MAX_B64 = 350 * 1024;
 
 // subtype is a free-form caller-convention string post-ADR-0004.
 // Storage interprets nothing; the regex below is just an
