@@ -197,6 +197,11 @@ export const objectRevisions = pgTable(
       },
     })('nonce'),
     keyVersion: integer('key_version'),
+    // Per-Revision DEK-Scheme. Migration 0020. Bei Lazy-Migration sind
+    // alte Revs 'owner_hkdf' (Owner-DEK + legacy-AAD), neue Revs sind
+    // 'per_object' (Per-Object-DEK + AAD-v2). Read-Pfad in revisions.ts
+    // braucht dispatch-logic basierend auf dieser Spalte.
+    dekScheme: text('dek_scheme').notNull().default('owner_hkdf'),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   },
   (t) => ({

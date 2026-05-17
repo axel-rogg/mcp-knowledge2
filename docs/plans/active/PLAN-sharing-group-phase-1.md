@@ -1,11 +1,24 @@
 # PLAN: Group-basiertes Document-Sharing Phase 1
 
-> **Status:** ⚠️ Spec (Build pending) 2026-05-17
+> **Status:** ⚠️ Spec (Build pending) 2026-05-17 — Pre-Build-Reviews durch, Schema-Spike (Migrations 0019 + 0020) committed, PLAN aktualisiert nach Engineering-Review.
 > **Repo:** mcp-knowledge2
 > **Cross-Repo-ADR:** [approval2/docs/adr/0024-group-sharing-architecture.md](https://github.com/axel-rogg/mcp-approval2/blob/main/docs/adr/0024-group-sharing-architecture.md)
-> **Pre-Build-Review:** [docs/security/CRYPTO-REVIEW-GROUP-SHARING-2026-05-17.md](../../security/CRYPTO-REVIEW-GROUP-SHARING-2026-05-17.md) — Crypto-Specialist hat die geplante Schema-Architektur reviewt und 4 schema-kritische Korrekturen identifiziert (in diesem Plan eingearbeitet).
-> **Aufwand:** ~9-10 Tage Build + Tests
+> **Pre-Build-Reviews:**
+>   - [docs/security/CRYPTO-REVIEW-GROUP-SHARING-2026-05-17.md](../../security/CRYPTO-REVIEW-GROUP-SHARING-2026-05-17.md) — Crypto-Specialist (4 Schema-Korrekturen, eingearbeitet)
+>   - [docs/security/PLAN-REVIEW-SHARING-PHASE-1-2026-05-17.md](../../security/PLAN-REVIEW-SHARING-PHASE-1-2026-05-17.md) — Engineering-Sanity-Check (15 Unter-Spezifikationen, in diesem Plan eingearbeitet)
+> **Aufwand:** ~12-14 Tage Build + Tests (initial 9.5d war zu optimistisch — Engineering-Review hat AAD-Refactor + KC2-HTTP-Routes + Drizzle-Sync + Lazy-Migration-on-Revisions als hidden complexity identifiziert).
 > **Trigger:** User-Decision 2026-05-17 abend — Firma-Use-Case erfordert Group-basiertes Sharing (statt 1:1-Provisorium). Family-Modus braucht es nicht, Self-Host-für-Freunde + Corporate brauchen es.
+>
+> **Build-Reihenfolge (revidiert nach Engineering-Review):**
+> ```
+> 1 (Migration) + 3 (AAD-v2)   → de-risk parallel, kleinster Code-Pfad, beide breaking-changes
+>        ↓
+> 4 (Lazy-Migration inkl. object_revisions)
+>        ↓
+> 5 (Read-Pfad + updateObject) + 6 (Group-CRUD + KC2-Routes + Adapter)
+>        ↓
+> 7 (Cascade) → 2 (KMS-Layer) → 8 (Tool-Surface) → 9 (PWA) → 10 (Tests+Audit)
+> ```
 
 ---
 
@@ -32,25 +45,43 @@
 - Group-Owner-Transfer
 - Async Re-Wrap-Worker für Member-Remove bei >1000 Grants
 
-### Build-Reihenfolge (10 Items)
+### Build-Reihenfolge (10 Items, revidiert nach Engineering-Review)
 
-| # | Item | Aufwand | Risiko |
-|---|---|---|---|
-| 1 | Migration: neue Tabellen + Spalten | ~1d | low |
-| 2 | KMS-Layer: Group-Master-Cache + Wrap/Unwrap-Helpers | ~1d | medium (KMS-Quota) |
-| 3 | AAD-v2 RecordType + Domain-Separation | ~0.5d | medium (Crypto-Korrektheit) |
-| 4 | Lazy-Migration-Pfad (owner_hkdf → per_object) | ~1d | high (Atomicity) |
-| 5 | Read-Pfad: 501-Throw raus + Group-Read-Pfad rein | ~1d | medium |
-| 6 | Group-CRUD (create/list/get/archive, add_member/remove_member) | ~1.5d | high (Member-Remove-Rotation) |
-| 7 | Share-Cascade bei `addObjectRef(role='skill_resource')` | ~0.5d | medium (Race + Cycle) |
-| 8 | Tool-Surface: `groups.*` + `skills.share_with_group` + `shares.revoke` | ~0.5d | low |
-| 9 | PWA: Group-Management-View + Share-Modal + "Shared with me" | ~1.5d | low |
-| 10 | Tests + Audit-Events + Plan-Doc-Update | ~1d | — |
-| **Σ** | | **~9.5 Tage** | |
+| # | Item | Aufwand (alt) | Aufwand (real) | Risiko |
+|---|---|---|---|---|
+| 1 | Migration 0019/0020 + Drizzle-Schema-Sync + RLS-Patch auf objects | 1d | **1.5d** | medium |
+| 2 | KMS-Layer: Group-Master-Cache + Wrap/Unwrap-Helpers | 1d | 1d | medium (KMS-Quota) |
+| 3 | **AAD-v2 Discriminated-Union + Refactor 5 Call-Sites** | 0.5d | **1d** | medium (Crypto-Korrektheit) |
+| 4 | Lazy-Migration-Pfad inkl. `object_revisions.dek_scheme` + R2-Case | 1d | **1.5d** | high (Atomicity) |
+| 5 | Read-Pfad + **`updateObject` mit umgestellt** für per_object | 1d | **1.5d** | medium |
+| 6 | Group-CRUD + **KC2 HTTP-Routes** (`src/routes/groups.ts`) + **HttpKnowledgeAdapter-Erweiterung** | 1.5d | **2d** | high (Member-Remove-Rotation) |
+| 7 | Share-Cascade bei `addObjectRef` + **Cycle-Detection-Order vor FOR UPDATE** | 0.5d | **1d** | medium (Race + Cycle) |
+| 8 | Tool-Surface: `groups.*` + `skills.share_with_group` + **12 Tools × Zod × displayTemplate × Adapter** | 0.5d | **1d** | low |
+| 9 | PWA: **`#/admin/groups`** + Share-Modal + "Shared with me" + Cascade-Count-Preview | 1.5d | **2d** | low |
+| 10 | Tests + Audit-Events + **Pilot-Smoke E2E** + Contract-Tests | 1d | **1.5d** | — |
+| **Σ** | | **9.5d** | **~14d** | |
+
+**Engineering-Review hat insgesamt ~30% Overhead identifiziert** (siehe [PLAN-REVIEW-SHARING-PHASE-1-2026-05-17.md §8](../../security/PLAN-REVIEW-SHARING-PHASE-1-2026-05-17.md)). Hidden-Complexity-Top-3:
+1. Lazy-Migration mit `object_revisions.dek_scheme` (pro-Revision-Tracking subtil, 3 Test-Szenarien)
+2. RLS-Subquery objects → share_grants → group_members (Performance-Hotspot bei grossen Beständen)
+3. AAD-Union in Idempotency-Middleware (falscher Branch öffnet Replay-Window)
 
 ---
 
-## 1. Schema-Migration (Item 1)
+## 1. Schema-Migration (Item 1) — **COMMITTED**
+
+> **Stand 2026-05-17 abend:** Migration 0019 + 0020 + Drizzle-Schema-Sync sind als Spike committed (KC2 commit `ef00abc` für 0019, `next` für 0020). Code-Pfade nutzen die neuen Spalten noch nicht — Migration wird beim nächsten KC2-Code-Deploy mit dem Phase-1-Build zusammen aktiv.
+
+**Konkretes was im Repo liegt:**
+- [drizzle/migrations/0019_groups_and_sharing_phase1.sql](../../../drizzle/migrations/0019_groups_and_sharing_phase1.sql) — Haupt-Migration
+- [drizzle/migrations/0020_phase1_review_fixes.sql](../../../drizzle/migrations/0020_phase1_review_fixes.sql) — Engineering-Review-Nachbesserungen:
+  - `object_revisions.dek_scheme` Spalte (Lazy-Migration produziert mixed-state)
+  - Diamond-Cascade-UNIQUE-Index NULL-Pitfall fix (split in 2 Partial-Indexes)
+  - `groups.owner_id` FK zu users(id) ON DELETE RESTRICT (GDPR-Erase-Safety)
+  - `group_members.user_id` FK CASCADE
+  - `share_grants.granted_to/granted_by` FK zu users(id)
+- [src/db/schema.ts](../../../src/db/schema.ts) — Drizzle-Schema synchron (objects + shareGrants Tabellen erweitert, neue groups + groupMembers + GroupRow/GroupMemberRow Types)
+- [src/storage/shares.ts:23-32](../../../src/storage/shares.ts) — `ShareView.grantedTo` auf nullable umgestellt
 
 ### 1.1 Neue Migration `0XXX_groups_and_sharing_phase1.sql`
 
@@ -204,7 +235,9 @@ async function rotateGroupMaster(groupId: string, oldMaster: Uint8Array): Promis
 
 ---
 
-## 3. AAD-v2 Domain-Separation (Item 3)
+## 3. AAD-v2 Domain-Separation (Item 3) — **BREAKING-CHANGE-Refactor**
+
+> **Engineering-Review-Finding (CRITICAL):** Plan-Initial-Stand "neuen RecordType einfügen" war zu optimistisch. [src/lib/crypto/aad.ts:26-34](../../../src/lib/crypto/aad.ts) hat flaches `AadFields` mit Pflicht-`ownerId`. Variante B braucht **Discriminated-Union-Refactor** + Anpassung von **5 Call-Sites**: [objects.ts:168,363,442](../../../src/storage/objects.ts), [revisions.ts:69](../../../src/storage/revisions.ts), [uploads.ts:131](../../../src/storage/uploads.ts), [middleware/idempotency.ts:33](../../../src/middleware/idempotency.ts). Aufwand 0.5d → 1d. **Idempotency + uploads bleiben legacy** (kein per_object-Switch).
 
 [src/lib/crypto/aad.ts:14-25](../../../src/lib/crypto/aad.ts) erweitern:
 
@@ -257,7 +290,11 @@ export function buildAad(args:
 
 ---
 
-## 5. Read-Pfad: 501 raus, Group-Read rein (Item 5)
+## 5. Read-Pfad + **`updateObject` mit umgestellt** (Item 5)
+
+> **Engineering-Review-Finding (HIGH):** Initial Plan §5 erwähnte nur `readObject`. `updateObject` muss MIT umgestellt werden — sonst sind migrated Objects read-only für Owner. [objects.ts:429-465](../../../src/storage/objects.ts) lädt heute Owner-DEK + legacy-AAD. Für `dek_scheme='per_object'` muss es `unwrap(row.owner_wrapped_dek, ownerKek)` + AAD-v2 nutzen. Crypto-Review §3.2 erwähnt das, Plan jetzt explizit.
+>
+> Plus: `readObject`-Dispatch-Logic muss als ERSTE Bedingung in der Funktion stehen (vor dem `kms().resolveUserDek(...)`-Call), nicht erst im non-Owner-Branch. Sonst bricht Owner-Read auf migrierten Objects.
 
 [src/storage/objects.ts:352-359](../../../src/storage/objects.ts) — der 501-Throw kommt raus, ersetzt durch:
 
@@ -303,7 +340,28 @@ if (row.ownerId !== ctx.userId) {
 
 ---
 
-## 6. Group-CRUD (Item 6)
+## 6. Group-CRUD (Item 6) — **inkl. KC2 HTTP-Routes + HttpKnowledgeAdapter**
+
+> **Engineering-Review-Finding (HIGH, 2 Punkte):**
+> 1. **KC2 HTTP-Routes komplett unspezifiziert in Initial-Plan.** `src/routes/groups.ts` existiert nicht. [routes/shares.ts:11-15](../../../src/routes/shares.ts) Zod-Body akzeptiert nur `granted_to: uuid()` — Group-Variante fehlt.
+> 2. **HttpKnowledgeAdapter braucht ~6 neue Methoden.** [packages/adapters/src/knowledge/http-client.ts:554-590](https://github.com/axel-rogg/mcp-approval2/blob/main/packages/adapters/src/knowledge/http-client.ts) hat heute nur createShare/listShares/revokeShare. Adapter-Unit-Tests + Mock-fetch-Pattern existiert in [http-client.test.ts:795-800](https://github.com/axel-rogg/mcp-approval2/blob/main/packages/adapters/src/knowledge/http-client.test.ts) — analog erweitern.
+>
+> **KC2 HTTP-Routes (neuer File `src/routes/groups.ts`):**
+> - `POST /v1/groups` — create
+> - `GET /v1/groups` — list-for-user
+> - `GET /v1/groups/:id` — get-with-members
+> - `PATCH /v1/groups/:id` — update (name, description, read_audit_enabled)
+> - `DELETE /v1/groups/:id` — archive
+> - `POST /v1/groups/:id/members` — add (Body: user_email, role)
+> - `DELETE /v1/groups/:id/members/:user_id` — remove
+> - `PATCH /v1/groups/:id/members/:user_id` — role_change
+>
+> **`src/routes/shares.ts` Erweiterung:** Zod-Union mit `granted_to_group_id`.
+>
+> **HttpKnowledgeAdapter neue Methoden (in approval2):**
+> `createGroup`, `listGroups`, `getGroup`, `addGroupMember`, `removeGroupMember`, `shareWithGroup`, `revokeGroupShare`, `setGroupReadAudit`.
+>
+> Service-Deploy-Reihenfolge: **KC2 zuerst** (HTTP-Routes verfügbar), **dann approval2** (Adapter ruft sie).
 
 [src/storage/groups.ts](../../../src/storage/groups.ts) — neuer File.
 
@@ -397,7 +455,11 @@ async function removeMember(groupId: string, userIdToRemove: string) {
 
 ---
 
-## 7. Cascade-Hook bei `addObjectRef` (Item 7)
+## 7. Cascade-Hook bei `addObjectRef` (Item 7) — **Cycle-Detection-Order beachten**
+
+> **Engineering-Review-Finding (MEDIUM):** [refs.ts:114-136](../../../src/storage/refs.ts) macht heute BFS-Depth-32 mit Random-Reads auf `objects`. Plan §7 hängt einen `FOR UPDATE` auf parent-Skill dahinter in derselben TX. **Lock-Order-Risiko bei parallelen Diamond-Cascades.**
+>
+> **Sequence-Fix:** Cycle-Detection läuft VOR `FOR UPDATE`. Dann Lock-Acquisition als single-point. Diamond-Cascade-Race wird durch UNIQUE-Index aus 0020 + `INSERT ON CONFLICT DO NOTHING` aufgefangen.
 
 [src/storage/refs.ts](../../../src/storage/refs.ts) — bei `addObjectRef(from, to, role)`:
 
@@ -457,12 +519,16 @@ async function addObjectRef(fromId: string, toId: string, role: string) {
 
 ## 8. Tool-Surface (Item 8)
 
+> **Engineering-Review-Decision-Punkt (HIGH):** Sensitivity-Wahl für `groups.add_member`. In approval2 triggert `'danger'` zusätzlich PRF-Eval (Re-Auth). Reviewer hält das für add_member überdimensioniert, empfiehlt **`'write'` mit klarem displayTemplate-Hinweis** ("X kann ab dann alle Gruppen-Inhalte lesen").
+>
+> **Decision für Phase 1:** `'write'` mit `displayTemplate` der den Impact explizit zeigt. Wenn Phase 2 Schaden-Reports zeigt dass User versehentlich Member added, kann später auf `'danger'` upgegradet werden — Migrationspfad ist 1-Zeilen-Change.
+
 Neue Tools in approval2:
 - `groups.create(name, description?, cascade_on_share_default?, read_audit_enabled?)` — sensitivity='write'
 - `groups.list()` — sensitivity='read'
 - `groups.get(group_id)` — sensitivity='read'
 - `groups.archive(group_id)` — sensitivity='write'
-- `groups.add_member(group_id, user_email, role)` — **sensitivity='danger'** (andere Person affected, immer Approval)
+- `groups.add_member(group_id, user_email, role)` — **sensitivity='write'** mit displayTemplate: "**Achtung:** X wird Member von Gruppe Y und kann ab dann alle Gruppen-Inhalte lesen. Diese Aktion ist umkehrbar (remove_member), aber bereits gelesene Inhalte können nicht zurückgerufen werden."
 - `groups.remove_member(group_id, user_id)` — sensitivity='write'
 - `groups.list_members(group_id)` — sensitivity='read'
 - `groups.set_read_audit(group_id, enabled)` — sensitivity='write' (admin-only)
@@ -471,13 +537,17 @@ Neue Tools in approval2:
 - `shares.revoke(resource_id, group_id)` — sensitivity='write'
 - `shares.list_my_shares()` — sensitivity='read' ("Shared with me")
 
-WYSIWYS-display für `add_member`: "X als Member zu Gruppe Y einladen. X kann ab dann alle Gruppen-Inhalte lesen."
+**Cascade-Count-Preview (Engineering-Review-Finding LOW):** `skills.share_with_group.execute` muss vor Approval-Build die Cascade-Count berechnen (PLAN §9 zeigt "Schließt ein: 12 verknüpfte Dokumente"). Compute-Pfad: `SELECT COUNT(*) FROM object_refs WHERE from_id=$skill AND role='skill_resource'` + Substitution im displayTemplate via `{{cascade_count}}`-Placeholder. Aufwand +0.5d.
 
 ---
 
-## 9. PWA (Item 9)
+## 9. PWA (Item 9) — **Route unter `#/admin/groups`**
 
-Neue Route `#/groups`:
+> **Engineering-Review-Empfehlung (MEDIUM):** Group-Management ist Administrations-Operation. [apps/web/src/main.ts:7-90](https://github.com/axel-rogg/mcp-approval2/blob/main/apps/web/src/main.ts) hat `#/admin`-Tab. Statt eigenen Top-Level-`#/groups` → Sub-Route `#/admin/groups` einbauen — konsistent zur existierenden Admin-IA.
+>
+> "Shared with me" wird **NICHT** eigener Tab, sondern Toggle im Storage-Tab: `owned | shared-with-me | both` (Engineering-Review-Empfehlung LOW). Konsistent mit existierendem `subtype`-Filter.
+
+Neue Route `#/admin/groups`:
 - Liste meiner Gruppen
 - Click → Detail mit Tabs: Members / Geteilte Inhalte / Aktivität / Einstellungen (admin-only)
 
@@ -515,6 +585,15 @@ Read-Audit-Volumen-Cap: in Phase 1 keine Aggregation, bei Bedarf in Phase 2.
 
 ## 11. Tests
 
+> **Engineering-Review-Findings (HIGH, 3 Punkte):**
+> 1. **Testcontainer-Pattern funktioniert.** [tests/integration/rls.test.ts:43-50](../../../tests/integration/rls.test.ts) apply'd alle Migrations lexikographisch — neue 0019/0020 laufen automatisch mit. Aber keiner der 28 existing Tests prüft `granted_to_group_id` — Phase-1-PR muss mind. **5 neue RLS-Tests** mitbringen (Group-Member-Read, Removed-Member-Block, Cross-Group-Leak-Block, Cascade-INSERT-RESTRICTIVE-Check, Diamond-Cascade-Uniqueness).
+> 2. **Storage-Unit-Tests gibt es nicht** in KC2. Tests liegen in `tests/{unit,integration,contract}/`. Cycle-Detection-Race + Lazy-Migration-Atomicity → `tests/integration/groups.test.ts` (gleicher Container-Pattern), Crypto-Domain-Separation → `tests/unit/crypto.test.ts`.
+> 3. **Contract-Tests** in approval2: `apps/server/tests/contract/groups-roundtrip.test.ts` (KC2 `/v1/groups/*`-Shape) + `shares-with-group.test.ts` (Cascade-Antwort mit `via_cascade_from_object_id`).
+>
+> **`object_vectors`-Blindheit für Group-Members** (Engineering-Review MEDIUM): RLS aus [Migration 0014](../../../drizzle/migrations/0014_vec_owner_only_rls.sql) sperrt Group-Members aus den Embeddings aus (Embedding-Inversion-Defense — SEC-K-023). **By-design.** Phase 1 muss dokumentieren: Group-Members kriegen FTS-Treffer auf shared objects, **aber keine Vektor-Treffer**. UX-Erwartung: "Suche findet geteilte Inhalte über Stichworte, aber nicht über semantische Ähnlichkeit". Phase 2 könnte einen separaten Vector-Share-Scope einführen mit Re-Encrypt-vor-Share.
+>
+> **Pilot-Smoke** (Engineering-Review MEDIUM): [scripts/pilot-smoke.sh](https://github.com/axel-rogg/mcp-approval2/blob/main/scripts/pilot-smoke.sh) hat heute keine Group-Operationen. Phase 1 braucht E2E-Pfad: `create-group` → `add-member` → `share-skill-with-group` → `read-as-member`.
+
 ### Unit-Tests
 - AAD-Domain-Separation: `objects` vs `objects-v2` nicht cross-decryptable
 - Per-Object-DEK Random-Entropy (32-Bytes, kein Salt-Repeat)
@@ -537,7 +616,7 @@ Read-Audit-Volumen-Cap: in Phase 1 keine Aggregation, bei Bedarf in Phase 2.
 
 ---
 
-## 12. Migration-Strategy für existing Production-Data
+## 12. Migration-Strategy + Roll-back-Sequence + Service-Deploy-Reihenfolge
 
 Family-Modus heute hat **keine** geteilten Objects (Privat-Use-Case). Migration ist also nur Schema-Add ohne Backfill:
 
@@ -545,7 +624,46 @@ Family-Modus heute hat **keine** geteilten Objects (Privat-Use-Case). Migration 
 2. Owner-Reads weiterhin auf altem Pfad (HKDF + AAD `objects|owner|id`)
 3. Erst beim ersten Share eines Objects wird es lazy-migrated
 
-**Roll-back-Safety:** Migration ist additiv (nur ADD COLUMN + neue Tabellen). Bei Roll-back Schritt-für-Schritt: erst Code revert (kein neuer Share-Pfad mehr), dann optional DROP der neuen Tabellen.
+**Service-Deploy-Reihenfolge** (Engineering-Review-Finding HIGH):
+1. **KC2 zuerst deployen** (HTTP-Routes für `/v1/groups/*` verfügbar)
+2. **Dann approval2 deployen** (HttpKnowledgeAdapter ruft sie, Tool-Surface aktiv)
+3. Andernfalls ruft approval2 in 404-Routes und Tool-Calls failen mid-Migration
+
+**Roll-back-Sequence** (Engineering-Review-Finding HIGH):
+Plan-Behauptung "additiv" stimmt **teilweise**:
+- DROP TABLE `groups`, `group_members` → trivial
+- DROP COLUMN auf `objects`, `share_grants` → trivial
+- **NICHT trivial:** `ALTER COLUMN granted_to DROP NOT NULL` Roll-back failt wenn pre-Roll-back ein group-share inserted wurde (`granted_to=NULL`). Recovery: `DELETE WHERE granted_to IS NULL` oder Backfill.
+- **NICHT trivial:** RLS-Patch auf `objects.owner_or_shared_read` — Roll-back-Reihenfolge muss erst Code revert (501-throw wieder aktiv), DANN Policy revert. Sonst sieht Old-Code Multi-Member-Shares.
+
+**Echte Roll-back-Sequence:**
+1. Code-Deploy revert (alte 501-Throw-Logic wieder aktiv, kein Group-Read-Pfad)
+2. Group-Shares cleanen: `DELETE FROM share_grants WHERE granted_to_group_id IS NOT NULL`
+3. `groups` + `group_members` Rows löschen (oder Tables droppen)
+4. Migration revert: DROP Spalten + RLS-Policy zurück
+5. `granted_to NOT NULL` wieder aktivieren
+
+**Partial-Apply:** Postgres DDL in TX → atomic, kein partial-state möglich.
+
+## 13. GDPR-Erase + Group-Owner-Behandlung
+
+> **Engineering-Review-Finding (MEDIUM):** [objects.ts:611-625](../../../src/storage/objects.ts) `hardDeleteByOwner` (BYPASSRLS) löscht direkte+Cascade-Grants via FK-CASCADE. Aber: wenn `users.id` gelöscht wird, bleiben `groups.owner_id` orphan und `group_members.user_id` ebenfalls.
+>
+> **Migration 0020 löst das schemaseitig:**
+> - `groups.owner_id` FK ON DELETE **RESTRICT** — User-Delete blockt wenn er noch Groups owned
+> - `group_members.user_id` FK ON DELETE **CASCADE** — Member-Rows verschwinden automatisch
+> - `share_grants.granted_to/granted_by` FK ON DELETE **CASCADE** — share-Rows verschwinden auch
+>
+> **Was hardDeleteByOwner App-Layer machen muss (Phase 1 Code-Item Q10):**
+> 1. Vor `DELETE FROM users WHERE id=$ownerId`: alle owned Groups behandeln
+>    - Option A: Auto-Archive (`UPDATE groups SET archived_at=now, ...`) — Members verlieren Read-Zugriff
+>    - Option B: Owner-Transfer an einen anderen aktiven Admin der Group — Phase 2+ Feature
+>    - Phase 1 Default: **Auto-Archive** (einfach, sicher, kein Transfer-UX nötig)
+> 2. Für jede archivierte Group: `groups.master_version` finalisieren, `wrapped_master_dek` löschen (Crypto-Shred der Group). Members können nichts mehr lesen.
+> 3. `hardDeleteByOwner` selbst läuft dann durch — alle FKs cascaden korrekt.
+> 4. Audit: `group.archived_due_to_owner_erase` mit `target_user_id` und Group-Liste.
+
+
 
 ---
 
