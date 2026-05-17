@@ -23,7 +23,12 @@ export interface CreateShareInput {
 export interface ShareView {
   id: string;
   resourceId: string;
-  grantedTo: string;
+  /**
+   * Phase 1: nullable seit Migration 0019 — Group-Grants haben statt grantedTo
+   * ein grantedToGroupId. Phase-1-Code-Pfade behandeln User-Grants weiterhin;
+   * Group-Grant-Surface kommt in den naechsten Build-Commits.
+   */
+  grantedTo: string | null;
   grantedBy: string;
   scope: SharePermission;
   grantedAt: number;

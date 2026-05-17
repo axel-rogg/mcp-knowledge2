@@ -98,6 +98,27 @@ export const objects = pgTable(
     qualityCheckedAt: bigint('quality_checked_at', { mode: 'number' }),
     qualityRubricVersion: integer('quality_rubric_version'),
 
+    // ── Group-Sharing Phase 1 (Migration 0019) ───────────────────────────
+    // dek_scheme: 'owner_hkdf' (legacy) oder 'per_object' (random DEK,
+    // wrapped). Lazy-Migrate beim ersten Share. CHECK-Constraint in DB
+    // enforct Consistency mit owner_wrapped_dek.
+    dekScheme: text('dek_scheme').notNull().default('owner_hkdf'),
+    ownerWrappedDek: customType<{ data: Uint8Array; driverData: Buffer }>({
+      dataType() {
+        return 'bytea';
+      },
+      toDriver(v) {
+        return Buffer.from(v);
+      },
+      fromDriver(v) {
+        return new Uint8Array(v as Buffer);
+      },
+    })('owner_wrapped_dek'),
+    ownerWrapKeyVersion: integer('owner_wrap_key_version'),
+    // Cascade-on-share opt-out per Object. Default TRUE: bei addObjectRef
+    // (role='skill_resource') werden Shares des Parents auto-übertragen.
+    cascadeOnShare: boolean('cascade_on_share').notNull().default(true),
+
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
     lastUsedAt: bigint('last_used_at', { mode: 'number' }),
@@ -184,22 +205,129 @@ export const objectRevisions = pgTable(
 );
 
 // ─── Share Grants ──────────────────────────────────────────────────────────
+//
+// Erweiterung Phase 1 (Migration 0019): Group-Sharing.
+// granted_to (User-Grant) ist jetzt NULLABLE. Entweder granted_to ODER
+// granted_to_group_id ist gesetzt — XOR-Constraint in DB enforct das.
+// Bei granted_to_group_id IS NOT NULL: wrapped_object_dek + group_master_
+// version sind Pflicht (Body-Decrypt-Chain).
 
 export const shareGrants = pgTable(
   'share_grants',
   {
     id: uuid('id').primaryKey().defaultRandom(),
     resourceId: uuid('resource_id').notNull(),
-    grantedTo: uuid('granted_to').notNull(),
+    grantedTo: uuid('granted_to'),
+    grantedToGroupId: uuid('granted_to_group_id'),
     grantedBy: uuid('granted_by').notNull(),
     scope: text('scope').notNull(),
     grantedAt: bigint('granted_at', { mode: 'number' }).notNull(),
     expiresAt: bigint('expires_at', { mode: 'number' }),
     revokedAt: bigint('revoked_at', { mode: 'number' }),
+    // Audit-Spur fuer cascaded shares (z.B. via skill_resource ref).
+    // NULL = direkt geteilt; NOT NULL = via Skill-Bundle.
+    viaCascadeFromObjectId: uuid('via_cascade_from_object_id'),
+    // Object-DEK wrapped mit Group-Master-DEK. Nur für Group-Grants.
+    wrappedObjectDek: customType<{ data: Uint8Array; driverData: Buffer }>({
+      dataType() {
+        return 'bytea';
+      },
+      toDriver(v) {
+        return Buffer.from(v);
+      },
+      fromDriver(v) {
+        return new Uint8Array(v as Buffer);
+      },
+    })('wrapped_object_dek'),
+    // Snapshot von groups.master_version zum Wrap-Zeitpunkt. Bei Member-
+    // Remove-Rotation wird die Spalte fuer die bleibenden Grants
+    // hochgezogen. Read-Pfad prueft `wrapped_for_master_version >=
+    // group_master_version` als Stale-Check.
+    groupMasterVersion: integer('group_master_version'),
   },
   (t) => ({
     lookup: index('idx_grants_lookup').on(t.grantedTo, t.revokedAt),
     resource: index('idx_grants_resource').on(t.resourceId, t.revokedAt),
+    groupActive: index('idx_share_grants_group_active').on(
+      t.grantedToGroupId,
+      t.resourceId,
+    ),
+  }),
+);
+
+// ─── Groups (Phase 1, Migration 0019) ──────────────────────────────────────
+
+export const groups = pgTable(
+  'groups',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    ownerId: uuid('owner_id').notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    // Group-Master-DEK wrapped mit GCP-KMS (Variante C: KMS-wrapped +
+    // Process-Cache TTL 5min, NICHT Owner-KEK-wrapped — siehe ADR-0024).
+    wrappedMasterDek: customType<{ data: Uint8Array; driverData: Buffer }>({
+      dataType() {
+        return 'bytea';
+      },
+      toDriver(v) {
+        return Buffer.from(v);
+      },
+      fromDriver(v) {
+        return new Uint8Array(v as Buffer);
+      },
+    })('wrapped_master_dek').notNull(),
+    // Monoton inkrementiert bei Member-Remove-Rotation. Coordinator-Lock-
+    // Ziel fuer die Eine-TX-Member-Remove-Sequenz.
+    masterVersion: integer('master_version').notNull().default(1),
+    rotatedAt: bigint('rotated_at', { mode: 'number' }),
+    // Wenn TRUE: jeder body-Read von non-Owner via Group-Membership
+    // schreibt share.read-Audit-Event. Default FALSE (kein Surveillance-
+    // Default; Group-Admin entscheidet).
+    readAuditEnabled: boolean('read_audit_enabled').notNull().default(false),
+    // Default fuer cascade-on-share bei addObjectRef innerhalb dieser Group.
+    // Default TRUE (auto-cascade ist erwarteter UX-Pfad).
+    cascadeOnShareDefault: boolean('cascade_on_share_default')
+      .notNull()
+      .default(true),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    archivedAt: bigint('archived_at', { mode: 'number' }),
+  },
+  (t) => ({
+    owner: index('idx_groups_owner').on(t.ownerId),
+  }),
+);
+
+// ─── Group Members (Phase 1, Migration 0019) ───────────────────────────────
+
+export const groupMembers = pgTable(
+  'group_members',
+  {
+    groupId: uuid('group_id').notNull(),
+    userId: uuid('user_id').notNull(),
+    role: text('role').notNull(),
+    // Group-Master-DEK gewrapped mit Member-KEK (per-User-HKDF).
+    wrappedGroupDek: customType<{ data: Uint8Array; driverData: Buffer }>({
+      dataType() {
+        return 'bytea';
+      },
+      toDriver(v) {
+        return Buffer.from(v);
+      },
+      fromDriver(v) {
+        return new Uint8Array(v as Buffer);
+      },
+    })('wrapped_group_dek').notNull(),
+    // = groups.master_version zum Wrap-Zeitpunkt. Wenn <
+    // groups.master_version → Member ist stale (post-rotation).
+    wrappedForMasterVersion: integer('wrapped_for_master_version').notNull(),
+    joinedAt: bigint('joined_at', { mode: 'number' }).notNull(),
+    removedAt: bigint('removed_at', { mode: 'number' }),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.groupId, t.userId] }),
+    user: index('idx_group_members_user').on(t.userId),
+    active: index('idx_group_members_active').on(t.groupId, t.userId),
   }),
 );
 
@@ -459,6 +587,8 @@ export const schema = {
   objectTags,
   objectRevisions,
   shareGrants,
+  groups,
+  groupMembers,
   objectVectors,
   auditLog,
   idempotencyRecords,
@@ -472,6 +602,9 @@ export const schema = {
   oauthAuthCodes,
   oauthRefreshTokens,
 };
+
+export type GroupRow = typeof groups.$inferSelect;
+export type GroupMemberRow = typeof groupMembers.$inferSelect;
 
 export type ObjectRow = typeof objects.$inferSelect;
 export type NewObjectRow = typeof objects.$inferInsert;
