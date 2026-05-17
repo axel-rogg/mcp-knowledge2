@@ -310,6 +310,8 @@ export async function syncFromApproval2(input: UserSyncInput): Promise<UserSyncO
           status: input.status,
           createdAt: now,
           lastSeenAt: now,
+          // SEC-K-006: persist approval2-User-ID bei Create
+          externalId: input.approval2UserId,
         })
         .returning();
       const row = inserted[0];
@@ -321,16 +323,56 @@ export async function syncFromApproval2(input: UserSyncInput): Promise<UserSyncO
       return { status: 'created', kcUserId: row.id };
     }
 
+    // SEC-K-006: external_id-Mismatch-Check.
+    // Wenn die existing-Row schon ein external_id hat das != input ist:
+    // jemand versucht mit einer fremden approval2-ID auf eine bestehende
+    // Email-Row zu mappen (Email-Collision-Take-Over). Refuse.
+    if (
+      existing.externalId !== null &&
+      existing.externalId !== input.approval2UserId
+    ) {
+      logger.warn(
+        {
+          kcUserId: existing.id,
+          email: existing.email,
+          existingExternalId: existing.externalId,
+          incomingExternalId: input.approval2UserId,
+        },
+        'user-sync: external_id-mismatch — refusing update',
+      );
+      throw errForbidden('user-sync external_id mismatch — possible take-over attempt');
+    }
+
     // Determine whether we have a real diff. Erased rows: no-op
     // (idempotent state).
     if (existing.status === 'erased') {
       return { status: 'unchanged', kcUserId: existing.id };
     }
 
+    // SEC-K-006: status state-machine.
+    // active → suspended: ok (Admin-Suspend in approval2 propagiert).
+    // suspended → suspended: ok (idempotent).
+    // suspended → active: REFUSE — Re-Activation muss explicit via separater
+    //   Admin-Route mit Audit-Trail laufen, nicht via stillschweigendem Sync.
+    // active → active: ok.
+    // * → erased: ok (Admin-Erase, einseitig final).
+    if (existing.status === 'suspended' && input.status === 'active') {
+      logger.warn(
+        { kcUserId: existing.id, email: existing.email },
+        'user-sync: suspended→active blocked — use explicit admin re-activation',
+      );
+      throw errForbidden('user-sync cannot resurrect suspended user to active');
+    }
+
     const patch: Partial<UserRow> = {};
     if (existing.status !== input.status) patch.status = input.status;
     if ((existing.displayName ?? null) !== (input.displayName ?? null)) {
       patch.displayName = input.displayName;
+    }
+    // SEC-K-006: external_id-Backfill — wenn existing.externalId NULL (Bootstrap-
+    // Admin oder Pre-Migration-Row) und input liefert eine ID: write-through.
+    if (existing.externalId === null && input.approval2UserId) {
+      patch.externalId = input.approval2UserId;
     }
     if (Object.keys(patch).length === 0) {
       return { status: 'unchanged', kcUserId: existing.id };

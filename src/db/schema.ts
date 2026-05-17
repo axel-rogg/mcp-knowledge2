@@ -258,6 +258,10 @@ export const users = pgTable('users', {
   lastSeenAt: bigint('last_seen_at', { mode: 'number' }),
   invitedBy: uuid('invited_by'),
   inviteToken: text('invite_token'),
+  // SEC-K-006: persist approval2-User-ID damit syncFromApproval2 nicht nur
+  // auf Email-Match angewiesen ist. Bei Mismatch (Email gleich, external_id
+  // verschieden) → refuse Sync-Update. Migration 0012.
+  externalId: text('external_id'),
 });
 
 export const invites = pgTable('invites', {
