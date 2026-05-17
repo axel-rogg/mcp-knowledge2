@@ -10,7 +10,7 @@ import { idempotency } from './middleware/idempotency.ts';
 import { userRateLimit } from './middleware/rate_limit.ts';
 import { requestLog } from './middleware/request_log.ts';
 import { requireJwtOrOnBehalfOf } from './auth/require_jwt_or_obo.ts';
-import { requireServiceToken } from './auth/service_token.ts';
+// requireServiceToken now mounted per-route in internalRouter (SEC-K-009 scope-split)
 import { healthRouter } from './routes/health.ts';
 import { objectsRouter } from './routes/objects.ts';
 import { sharesRouter } from './routes/shares.ts';
@@ -102,8 +102,10 @@ v1.route('/', uploadsRouter);
 app.route('/v1', v1);
 
 // ─── Service-Auth (internal) ───────────────────────────────────────────────
+// SEC-K-009: requireServiceToken wird pro-Route in internalRouter selbst
+// gemounted (mit scope-spezifischem Secret), nicht mehr global. Hier nur
+// noch context-install vor jeder Internal-Route.
 const internal = new Hono();
-internal.use('*', requireServiceToken);
 internal.use('*', installContext);
 internal.route('/', internalRouter);
 

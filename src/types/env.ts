@@ -136,7 +136,23 @@ const EnvSchema = z.object({
     .optional(),
   MCP_APPROVAL_ISSUER: z.string().default('mcp-approval2'),
 
+  // SEC-K-009 Service-Token-Split: pro Internal-Route ein eigenes Secret damit
+  // ein Leak nicht admin-equivalent ist. Legacy `SERVICE_TOKEN` bleibt als
+  // master-fallback bis approval2 die Scope-Tokens nutzt + danach removed.
   SERVICE_TOKEN: z.string().min(32),
+  SERVICE_TOKEN_ERASE: z.string().min(32).optional(),
+  SERVICE_TOKEN_SYNC: z.string().min(32).optional(),
+  SERVICE_TOKEN_OPS: z.string().min(32).optional(),
+
+  // SEC-K-016 + MUSS-§4.1.2: Erase-Receipt-JWS-Pflicht. Wenn `true`, /v1/internal/erase-user
+  // braucht zusaetzlich zum Bearer einen `x-erase-receipt: <jwt>`-Header,
+  // signiert von approval2 (MCP_APPROVAL_JWKS_URL), payload.sub muss
+  // body.user_id matchen. Solange falsch: legacy-Modus (confirmation_token
+  // length-Check).
+  REQUIRE_ERASE_RECEIPT: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1'),
 
   // ── Blob storage ──────────────────────────────────────────────────
   // Default 's3' covers AWS S3, Cloudflare R2, Backblaze B2, Hetzner OS,

@@ -20,10 +20,13 @@ import {
 } from '../db/schema.ts';
 import { blobStore } from '../adapters/blob/index.ts';
 import { emitAudit } from '../observability/audit.ts';
-import { errBadRequest } from '../lib/errors.ts';
+import { errBadRequest, errForbidden, errUnauthorized } from '../lib/errors.ts';
 import { logger } from '../lib/logger.ts';
 import { nowMs } from '../lib/ids.ts';
 import { syncFromApproval2 } from '../users/api.ts';
+import { requireServiceToken } from '../auth/service_token.ts';
+import { verifyEraseReceipt } from '../auth/erase_receipt.ts';
+import { loadEnv } from '../types/env.ts';
 import type { UserSyncInput } from '../users/api.ts';
 
 const EraseBody = z.object({
@@ -40,11 +43,30 @@ const UserSyncBody = z.object({
 });
 
 export const internalRouter = new Hono()
-  .post('/internal/erase-user', async (c) => {
+  .post('/internal/erase-user', requireServiceToken('erase'), async (c) => {
     const b = EraseBody.parse(await c.req.json());
     // confirmation_token validation is the responsibility of mcp-approval2;
     // we additionally require it to be non-empty as a sanity check
     if (b.confirmation_token.length < 16) throw errBadRequest('confirmation_token too short');
+
+    // SEC-K-016 + MUSS-§4.1.2: optional JWS-Receipt-Pflicht. Wenn aktiv
+    // muss approval2 einen signed-receipt mitschicken (`x-erase-receipt`)
+    // dessen `payload.sub === body.user_id`. Damit allein verhindert ein
+    // gestohlenes SERVICE_TOKEN_ERASE nicht mehr beliebige Erasures —
+    // Angreifer braeuchte zusaetzlich approval2's RS256-Signing-Key.
+    const env = loadEnv();
+    if (env.REQUIRE_ERASE_RECEIPT) {
+      const receipt = c.req.header('x-erase-receipt') ?? '';
+      if (!receipt) throw errUnauthorized('missing x-erase-receipt');
+      const verified = await verifyEraseReceipt(receipt).catch((e: Error) => {
+        logger.warn({ err: e.message }, 'erase-receipt verification failed');
+        return null;
+      });
+      if (!verified) throw errForbidden('invalid erase-receipt');
+      if (verified.subject !== b.user_id) {
+        throw errForbidden('erase-receipt subject does not match body.user_id');
+      }
+    }
 
     const userId = b.user_id;
 
@@ -173,7 +195,7 @@ export const internalRouter = new Hono()
       },
     });
   })
-  .post('/internal/users/sync', async (c) => {
+  .post('/internal/users/sync', requireServiceToken('sync'), async (c) => {
     // AS-3 §2.2 + A11: approval2 push-syncs user-state to KC2 on
     // create/suspend/erase. Idempotent — returns `unchanged` when the
     // payload matches the current row.
@@ -201,7 +223,7 @@ export const internalRouter = new Hono()
     });
     return c.json({ status: result.status, kc_user_id: result.kcUserId });
   })
-  .post('/internal/health-deep', async (c) => {
+  .post('/internal/health-deep', requireServiceToken('ops'), async (c) => {
     const checks: Record<string, { status: 'ok' | 'error'; detail?: string }> = {};
     try {
       await withAdminTx(async (db) => {

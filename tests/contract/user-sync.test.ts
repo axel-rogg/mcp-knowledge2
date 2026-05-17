@@ -107,7 +107,11 @@ const SERVICE_TOKEN = process.env.SERVICE_TOKEN as string;
 
 beforeAll(() => {
   app = new Hono();
-  app.use('/v1/*', requireServiceToken);
+  // SEC-K-009: scope-specific middleware now lives in internalRouter itself
+  // (per-route mount), so the test fixture doesn't need a global middleware.
+  // The legacy `requireServiceToken('sync')` import is kept to assert it's
+  // still callable from outside.
+  void requireServiceToken;
   app.route('/v1', internalRouter);
   app.onError(errorHandler);
 });
