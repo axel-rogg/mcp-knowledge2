@@ -59,4 +59,15 @@ export class OpenBaoKms implements KmsProvider {
     }
     return dek;
   }
+
+  async resolveEmbedSalt(_userId: string, _requestId: string): Promise<string> {
+    // SEC-K-024: OpenBao-Pfad ist seit ADR-0011 (2026-05-17) deprecated zu
+    // Cloud-KMS. Wenn jemand OpenBao wieder aktiviert: hier eine derive-key-
+    // Roundtrip via Transit (`transit/derive/<key>`) implementieren, oder
+    // einen separaten KEY für embed-salt anlegen. Heute non-load-bearing.
+    throw errServiceUnavailable(
+      'OpenBao-KMS hat resolveEmbedSalt nicht implementiert (Pfad deprecated, ' +
+        'Cloud-KMS ist Default seit ADR-0011)',
+    );
+  }
 }

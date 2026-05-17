@@ -37,6 +37,9 @@ const hkdfAsync = promisify(hkdf);
 
 const DEK_LENGTH_BYTES = 32;
 const HKDF_INFO = new TextEncoder().encode('dek-v1');
+// SEC-K-024: domain-separated derivation für embed-salt.
+const EMBED_SALT_BYTES = 16;
+const EMBED_SALT_INFO = new TextEncoder().encode('embed-salt-v1');
 
 let cachedMasterKey: Uint8Array | null = null;
 let cachedKmsClient: KeyManagementServiceClient | null = null;
@@ -137,6 +140,13 @@ export class CloudKmsKms implements KmsProvider {
     const salt = new TextEncoder().encode(userId);
     const derived = await hkdfAsync('sha256', master, salt, HKDF_INFO, DEK_LENGTH_BYTES);
     return new Uint8Array(derived as ArrayBuffer);
+  }
+
+  async resolveEmbedSalt(userId: string, _requestId: string): Promise<string> {
+    const master = await unwrapMasterKey();
+    const salt = new TextEncoder().encode(userId);
+    const derived = await hkdfAsync('sha256', master, salt, EMBED_SALT_INFO, EMBED_SALT_BYTES);
+    return Buffer.from(derived as ArrayBuffer).toString('hex');
   }
 }
 

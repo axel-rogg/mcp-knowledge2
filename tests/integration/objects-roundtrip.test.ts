@@ -115,6 +115,7 @@ beforeAll(async () => {
   const { setKmsForTest } = await import('../../src/adapters/kms/index.ts');
   setKmsForTest({
     resolveUserDek: async () => new Uint8Array(32), // all-zero key — fine for AES-GCM
+    resolveEmbedSalt: async () => '00000000000000000000000000000000', // 16 bytes hex
   });
 
   const { setEmbeddingAdapterForTest } = await import('../../src/adapters/embed/index.ts');

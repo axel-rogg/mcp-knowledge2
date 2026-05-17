@@ -118,11 +118,25 @@ async function sha256Hex(input: Uint8Array): Promise<string> {
   return Buffer.from(h).toString('hex');
 }
 
-function composeEmbedSource(args: {
+/**
+ * Composes the embed-source string from object metadata.
+ *
+ * SEC-K-024: if `embedSaltHex` is provided, postfix it as `§<hex>` to the
+ * source so that identical masked-PII-Strings of different Users produce
+ * different Embedding-Vectors (Cross-User-Inference-Oracle defense). Postfix
+ * statt Prefix: Transformer-Position-Embeddings → prefix dominiert
+ * [CLS]-Pool und überlagert semantischen Inhalt, postfix ändert Vektor-
+ * Endwert ohne semantische Verzerrung. § ist eindeutiger Tokenizer-Boundary.
+ *
+ * Search-Query-Pfad MUSS denselben Salt nutzen wie Index-Embeddings, sonst
+ * search-irrelevance.
+ */
+export function composeEmbedSource(args: {
   title?: string | null;
   description?: string | null;
   keywords?: string[] | null;
   triggerHints?: string | null;
+  embedSaltHex?: string;
 }): string | null {
   const parts = [
     args.title,
@@ -132,7 +146,8 @@ function composeEmbedSource(args: {
   ]
     .filter((p): p is string => typeof p === 'string' && p.trim().length > 0);
   if (parts.length === 0) return null;
-  return parts.join(' \n ');
+  const joined = parts.join(' \n ');
+  return args.embedSaltHex ? `${joined} §${args.embedSaltHex}` : joined;
 }
 
 // ─── Create ─────────────────────────────────────────────────────────────
@@ -175,7 +190,9 @@ export async function createObject(input: CreateObjectInput): Promise<ObjectView
   // 3. embedding (optional)
   let embedding: number[] | null = null;
   if (input.embed) {
-    const source = composeEmbedSource(input);
+    // SEC-K-024: per-user embed-salt postfix
+    const embedSaltHex = await kms().resolveEmbedSalt(ctx.userId, ctx.requestId);
+    const source = composeEmbedSource({ ...input, embedSaltHex });
     if (source) {
       const [vec] = await embeddingAdapter().embed([source], 'RETRIEVAL_DOCUMENT');
       embedding = vec ?? null;
@@ -467,6 +484,9 @@ export async function updateObject(id: string, input: UpdateObjectInput): Promis
     if (!updated) throw errForbidden('update blocked by RLS');
 
     if (input.reEmbed) {
+      // SEC-K-024: per-user embed-salt postfix (Cross-User-Inference-Defense).
+      // ctx.userId ist hier garantiert non-null durch den early-throw oben.
+      const embedSaltHex = await kms().resolveEmbedSalt(ctx.userId!, ctx.requestId);
       const source = composeEmbedSource({
         title: updates.title ?? row.title,
         description: updates.description ?? row.description,
@@ -476,6 +496,7 @@ export async function updateObject(id: string, input: UpdateObjectInput): Promis
             ? (JSON.parse(row.keywordsJson) as string[])
             : null,
         triggerHints: updates.triggerHints ?? row.triggerHints,
+        embedSaltHex,
       });
       if (source) {
         const [vec] = await embeddingAdapter().embed([source], 'RETRIEVAL_DOCUMENT');

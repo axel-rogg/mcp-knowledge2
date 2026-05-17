@@ -5,6 +5,7 @@ import { sql } from 'drizzle-orm';
 import { withUserTx } from '../db/client.ts';
 import { requireContext } from '../lib/context.ts';
 import { embeddingAdapter } from '../adapters/embed/index.ts';
+import { kms } from '../adapters/kms/index.ts';
 import { rrfFuse } from './rrf.ts';
 import { errBadRequest } from '../lib/errors.ts';
 
@@ -104,8 +105,16 @@ export async function hybridSearch(input: HybridSearchInput): Promise<HybridSear
   // 2000-char query (cap from src/mcp/register_tools.ts SearchInput), so
   // long queries still benefit from lexical matching.
   const queryForEmbed = query.length > 1500 ? query.slice(0, 1500) : query;
+  // SEC-K-024: Query MUSS denselben Per-User-Salt-Postfix kriegen wie die
+  // Index-Embeddings (composeEmbedSource). Sonst wären die Vektor-Geometrien
+  // verschoben und ein Match wäre zufallsbasiert. Wenn Salt-Resolve fail
+  // → continue ohne (besser degraded als komplett kaputt; FTS-branch greift).
+  const embedSaltHex = await kms()
+    .resolveEmbedSalt(ctx.userId, ctx.requestId)
+    .catch(() => null);
+  const saltedQuery = embedSaltHex ? `${queryForEmbed} §${embedSaltHex}` : queryForEmbed;
   const queryEmbed = embeddingAdapter()
-    .embed([queryForEmbed], 'RETRIEVAL_QUERY')
+    .embed([saltedQuery], 'RETRIEVAL_QUERY')
     .then((v) => v[0] ?? null)
     .catch(() => null);
 
