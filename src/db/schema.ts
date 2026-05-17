@@ -281,7 +281,16 @@ export const users = pgTable('users', {
   })('dek_salt')
     .notNull()
     .$defaultFn(() => new Uint8Array(randomBytesSync(32))),
-  dekSaltVersion: integer('dek_salt_version').notNull().default(1),
+  // SEC-K-005 Step B: NEUE User starten mit version=2 (per-user salt mixed in
+  // HKDF input, info='dek-v2'). Legacy-Rows aus Migration 0015 stehen auf
+  // DB-default=1 — werden via scripts/re-encrypt-dek-v2.mjs auf 2 gebumped
+  // sobald ihre Bodies neu verschluesselt sind. Drizzle's $defaultFn ueberschreibt
+  // den DB-DEFAULT bei Client-Inserts, also sind alle neuen Users post-Step-B
+  // automatisch v2 ohne Migrations-Code-Path.
+  dekSaltVersion: integer('dek_salt_version')
+    .notNull()
+    .default(1)
+    .$defaultFn(() => 2),
 });
 
 export const invites = pgTable('invites', {

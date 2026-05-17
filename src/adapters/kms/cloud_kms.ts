@@ -31,15 +31,30 @@ import { KeyManagementServiceClient } from '@google-cloud/kms';
 import { loadEnv } from '../../types/env.ts';
 import { logger } from '../../lib/logger.ts';
 import { errInternal } from '../../lib/errors.ts';
+import { getDekState } from '../../users/dek_state.ts';
 import type { KmsProvider } from './interface.ts';
 
 const hkdfAsync = promisify(hkdf);
 
 const DEK_LENGTH_BYTES = 32;
-const HKDF_INFO = new TextEncoder().encode('dek-v1');
+// SEC-K-005 Step B: v1 (legacy salt=userId) vs v2 (salt=userId||dek_salt).
+// users.dek_salt_version per row decides which derivation is applied.
+const HKDF_INFO_V1 = new TextEncoder().encode('dek-v1');
+const HKDF_INFO_V2 = new TextEncoder().encode('dek-v2');
 // SEC-K-024: domain-separated derivation für embed-salt.
 const EMBED_SALT_BYTES = 16;
 const EMBED_SALT_INFO = new TextEncoder().encode('embed-salt-v1');
+
+function buildDekSaltInput(userId: string, version: number, dekSalt: Uint8Array): Uint8Array {
+  const userIdBytes = new TextEncoder().encode(userId);
+  if (version >= 2) {
+    const combined = new Uint8Array(userIdBytes.length + dekSalt.length);
+    combined.set(userIdBytes, 0);
+    combined.set(dekSalt, userIdBytes.length);
+    return combined;
+  }
+  return userIdBytes;
+}
 
 let cachedMasterKey: Uint8Array | null = null;
 let cachedKmsClient: KeyManagementServiceClient | null = null;
@@ -137,8 +152,10 @@ async function unwrapMasterKey(): Promise<Uint8Array> {
 export class CloudKmsKms implements KmsProvider {
   async resolveUserDek(userId: string, _requestId: string): Promise<Uint8Array> {
     const master = await unwrapMasterKey();
-    const salt = new TextEncoder().encode(userId);
-    const derived = await hkdfAsync('sha256', master, salt, HKDF_INFO, DEK_LENGTH_BYTES);
+    const { dekSalt, version } = await getDekState(userId);
+    const saltInput = buildDekSaltInput(userId, version, dekSalt);
+    const info = version >= 2 ? HKDF_INFO_V2 : HKDF_INFO_V1;
+    const derived = await hkdfAsync('sha256', master, saltInput, info, DEK_LENGTH_BYTES);
     return new Uint8Array(derived as ArrayBuffer);
   }
 

@@ -19,4 +19,10 @@ export default [
       'no-console': ['error', { allow: ['warn', 'error'] }],
     },
   },
+  {
+    // Operator-CLI-Scripts duerfen stdout schreiben — sind Tools, kein
+    // service-Code wo info/log/debug verlorengeht.
+    files: ['scripts/**/*.ts'],
+    rules: { 'no-console': 'off' },
+  },
 ];
