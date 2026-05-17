@@ -4,7 +4,7 @@
 // (no users.id session-var available during /authorize before login).
 
 import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto';
-import { and, eq, lt } from 'drizzle-orm';
+import { and, eq, inArray, lt } from 'drizzle-orm';
 import { withAdminTx } from '../../db/client.ts';
 import { oauthAuthCodes, oauthClients, oauthRefreshTokens } from '../../db/schema.ts';
 import { nowMs, uuidV4 } from '../../lib/ids.ts';
@@ -240,6 +240,53 @@ export async function mintRefreshToken(input: RefreshTokenInput): Promise<string
 }
 
 /**
+ * SEC-K-013 Family-Revoke: traversiert die rotatedTo-Chain in beide
+ * Richtungen ab dem gegebenen Token-Hash und revokiert alle Members. Wird
+ * von rotateRefreshToken bei Replay-Detection aufgerufen.
+ *
+ * "Family" = alle Tokens die durch sequenzielle Rotation auseinander
+ * hervorgegangen sind. Per OAuth-2.1 §4.13 muss bei Replay die komplette
+ * Family unbrauchbar werden, damit weder der legitime User noch der Attacker
+ * weiter Tokens minten können.
+ */
+async function revokeRefreshFamily(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  startHash: string,
+): Promise<void> {
+  const now = nowMs();
+  const visited = new Set<string>();
+  const queue: string[] = [startHash];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    if (visited.has(cur)) continue;
+    visited.add(cur);
+    const rows = await db
+      .select()
+      .from(oauthRefreshTokens)
+      .where(eq(oauthRefreshTokens.tokenHash, cur))
+      .limit(1);
+    const row = rows[0];
+    if (!row) continue;
+    // Forward: nachfolgende rotation
+    if (row.rotatedTo && !visited.has(row.rotatedTo)) queue.push(row.rotatedTo);
+    // Backward: wer rotierte auf uns?
+    const preds = await db
+      .select({ tokenHash: oauthRefreshTokens.tokenHash })
+      .from(oauthRefreshTokens)
+      .where(eq(oauthRefreshTokens.rotatedTo, cur));
+    for (const p of preds as ReadonlyArray<{ tokenHash: string }>) {
+      if (!visited.has(p.tokenHash)) queue.push(p.tokenHash);
+    }
+  }
+  if (visited.size === 0) return;
+  await db
+    .update(oauthRefreshTokens)
+    .set({ revokedAt: now })
+    .where(inArray(oauthRefreshTokens.tokenHash, Array.from(visited)));
+}
+
+/**
  * Single-use refresh: consume the old token, mint a new one. K-D2 mandates
  * single-use rotation. Anti-replay is enforced by `revoked_at`.
  */
@@ -249,15 +296,29 @@ export async function rotateRefreshToken(rawToken: string): Promise<{
 }> {
   const tokenHash = sha256Hex(rawToken);
   return withAdminTx(async (db) => {
+    // SEC-K-013: SELECT ... FOR UPDATE serialisiert parallele Rotations auf
+    // demselben Token. Ohne FOR UPDATE konnten zwei parallele Calls beide den
+    // revoked_at=null check passieren und beide neue Token-Paare minten
+    // (OAuth-2.1 §4.13 verlangt single-use enforcement + Family-Revoke bei
+    // Replay-Detection).
     const rows = await db
       .select()
       .from(oauthRefreshTokens)
       .where(eq(oauthRefreshTokens.tokenHash, tokenHash))
+      .for('update')
       .limit(1);
     const row = rows[0];
     if (!row) throw errUnauthorized('unknown refresh token');
-    if (row.revokedAt) throw errUnauthorized('refresh token already used');
     if (row.expiresAt < nowMs()) throw errUnauthorized('refresh token expired');
+    if (row.revokedAt) {
+      // SEC-K-013 Family-Revoke: Replay detected — Token wurde bereits
+      // rotated. Per OAuth-2.1 §4.13 muss die komplette Family revoked
+      // werden (jeder rotatedTo-Descendant). Defense gegen den Fall dass
+      // ein leaked Refresh-Token vom Attacker eingelöst wurde + der echte
+      // User danach versucht zu rotaten (oder umgekehrt).
+      await revokeRefreshFamily(db, row.tokenHash);
+      throw errUnauthorized('refresh token replay — token family revoked');
+    }
 
     const newToken = generateOpaqueToken(48);
     const now = nowMs();

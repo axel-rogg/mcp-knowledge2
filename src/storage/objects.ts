@@ -357,7 +357,15 @@ export async function readObject(
     } else {
       throw new Error('object has neither inline body nor blob key');
     }
-    const body = await decrypt(key, { ciphertext: cipher, nonce: row.nonce, version: row.keyVersion }, aad);
+    // SEC-K-034: decrypt-Failure auf 404 mappen statt 500-Stacktrace. 500 vs
+    // 404 würde als Existence-Oracle leaken (Row existiert aber nicht
+    // entschlüsselbar = Side-Channel-Info).
+    let body: Uint8Array;
+    try {
+      body = await decrypt(key, { ciphertext: cipher, nonce: row.nonce, version: row.keyVersion }, aad);
+    } catch {
+      throw errNotFound(`object ${id} not found or not visible`);
+    }
 
     // mark used (best-effort, separate tx not needed — same tx)
     await db.update(objects).set({ lastUsedAt: nowMs() }).where(eq(objects.id, id));

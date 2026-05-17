@@ -107,7 +107,11 @@ async function unwrapMasterKey(): Promise<Uint8Array> {
     throw errInternal('KMS_PROVIDER=cloud_kms requires CLOUD_KMS_WRAPPED_MASTER_B64');
   }
   const ciphertext = Buffer.from(env.CLOUD_KMS_WRAPPED_MASTER_B64, 'base64');
-  logger.info({ kmsKey: env.CLOUD_KMS_KEY_NAME }, 'unwrapping master key via Cloud KMS');
+  // SEC-K-033: nur final-segment des KMS-Pfads loggen, nicht der volle
+  // resource-name (würde GCP-Project + KeyRing zu Logs/Sentry leaken,
+  // hilft Angreifer bei GCP-Project-Enum).
+  const keyShortName = env.CLOUD_KMS_KEY_NAME.split('/').pop() ?? '<unknown>';
+  logger.info({ kmsKey: keyShortName }, 'unwrapping master key via Cloud KMS');
   const [resp] = await kmsClient().decrypt({
     name: env.CLOUD_KMS_KEY_NAME,
     ciphertext,

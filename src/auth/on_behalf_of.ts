@@ -127,6 +127,35 @@ export async function verifyOnBehalfOf(args: {
   if (!user) throw errForbidden('OBO subject not provisioned');
   if (user.status !== 'active') throw errForbidden(`OBO subject is ${user.status}`);
 
+  // SEC-K-001: cross-check payload.sub (approval2-User-ID) gegen resolved-
+  // user.externalId. Verhindert dass approval2 (oder ein Compromised
+  // signing-key holder) beliebige User via on_behalf_of impersonisiert —
+  // payload.sub MUSS zur resolved-user-row matchen.
+  //
+  // Migration-Phase: external_id ist optional. Wenn NULL (Bootstrap-Admin
+  // pre-sync), skip-check + log warning. Sobald SEC-K-006-Backfill drueber
+  // gelaufen ist, ist external_id populated und der Check greift hart.
+  const payloadSub = typeof payload.sub === 'string' ? payload.sub : null;
+  if (user.externalId !== null) {
+    if (payloadSub === null || payloadSub !== user.externalId) {
+      logger.warn(
+        {
+          kcUserId: user.id,
+          userExternalId: user.externalId,
+          oboSub: payloadSub,
+          onBehalfOf: subject,
+        },
+        'OBO sub-externalId mismatch — refusing',
+      );
+      throw errForbidden('OBO sub does not match resolved user (SEC-K-001)');
+    }
+  } else {
+    logger.warn(
+      { kcUserId: user.id, email: user.email, oboSub: payloadSub },
+      'OBO sub-check skipped — user.external_id NULL (Migration-Phase)',
+    );
+  }
+
   // approval_id is optional at this layer (K-D4). The write/read gate is
   // enforced in K8 by inspecting the resolved tool's annotations.
   let approvalId: string | undefined;

@@ -87,7 +87,13 @@ export async function readRevision(objectId: string, version: number): Promise<R
     } else {
       throw new Error('revision has neither inline body nor blob key');
     }
-    const body = await decrypt(key, { ciphertext: cipher, nonce: rev.nonce, version: rev.keyVersion }, aad);
+    // SEC-K-034: decrypt-Failure auf 404 mappen (Existence-Oracle-Schutz).
+    let body: Uint8Array;
+    try {
+      body = await decrypt(key, { ciphertext: cipher, nonce: rev.nonce, version: rev.keyVersion }, aad);
+    } catch {
+      throw errNotFound(`revision ${objectId}@v${version} not found or not visible`);
+    }
 
     return { objectId, version, createdAt: rev.createdAt, body };
   });
