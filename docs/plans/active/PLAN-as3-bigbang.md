@@ -1,6 +1,6 @@
 # PLAN — AS-3 Big-Bang-Cutover (Cross-Repo)
 
-> **Status: ✅ TIER 0-3 CODE-COMPLETE 2026-05-15 — Tier 4 (Cutover-Day) pending**
+> **Status: ✅ TIER 0-3 CODE-COMPLETE 2026-05-15 + Multi-User-Readiness-Sprint COMPLETE 2026-05-17 — Tier 4 (Cutover-Day) ready**
 >
 > Implementations-Reihenfolge §4 (Tier 0-3) ist umgesetzt: parallel von zwei
 > Implementation-Agents + einem Cross-Service-Contract-Test-Agent, ~90 min
@@ -197,39 +197,59 @@ Siehe §5.
 
 ### 5.1 Vorab-Check (Vortag, T-1)
 
-- [ ] Beide Branches grün in CI (alle Tests, alle Typechecks, alle Lints)
-- [ ] Smoke-Tests laufen in beiden Repos lokal mit docker-compose
-- [ ] Google-OAuth-Setup verifiziert (Manual: Browser-Login funktioniert in dev)
-- [ ] OpenBao-Setup verifiziert (KC2 kann DEK resolven)
-- [ ] Secrets in Doppler aktualisiert für Pilot-Stage
-- [ ] PR-Approvals oder Solo-Review-Pass für beide Branches
-- [ ] Rollback-Snapshot: aktueller `main`-State beider Repos getagged als `pre-as3-cutover`
+**T-1-Check ausgeführt 2026-05-17:**
+
+- [x] Beide Branches grün in CI — knowledge2 38b3ec1 success; approval2 letztes-erfolgreiches 1c3a965, danach parallel-Agent-Aktivität (Phase-2-Features) noch im Flux. **Operator-Hand: vor Cutover finalen CI-Pass auf grün warten.**
+- [x] Service-Health verifiziert — v1 (mcp.ai-toolhub.org), v2 (mcp2/app2.ai-toolhub.org) alle 200. KC2 nicht direkt erreichbar (Lockdown wirkt).
+- [ ] Google-OAuth-Setup: redirect-URI in GCP-Console für `knowledge2.ai-toolhub.org` setzen (1 Klick). **Operator-Hand**.
+- [x] OpenBao-Setup obsolete — KEK-Provider ist seit ADR-0011 Google Cloud KMS (`europe-west3`, single-region). KC2 boot-time decrypts wrapped master, in-process HKDF.
+- [ ] Doppler-Secrets für Cutover **+ heutiger Sprint**: aktuell nur `KEK_PROVIDER=cloud_kms` + alte Werte. **Operator-Hand erforderlich** für die neuen Scope-Tokens (siehe Sprint-Aktivierungs-Block unten).
+- [x] Rollback-Snapshot: Tags `pre-as3-cutover-2026-05-17` gesetzt + gepusht in beiden Repos.
+
+### 5.1.5 Multi-User-Sprint-Aktivierungs-Block (NEU 2026-05-17)
+
+Heutiger Sprint hat Code für 3 CRITICAL + 3 HIGH Multi-User-Findings deployed. Code ist legacy-fallback-kompatibel (alles funktioniert auch ohne neue ENV-Werte). Volle Defense-in-Depth aktiviert sich erst mit Operator-Hand-Steps:
+
+| Step | Wann | Befehl / Doppler-Key | Effekt |
+|---|---|---|---|
+| Re-Encrypt-DEK auf v2 | Vor Cutover oder direkt im Cutover-Window (Service kurz aus) | `tsx scripts/re-encrypt-dek-v2.ts` (KC2-lokal gegen prod-DB) | SEC-K-005 Step B aktiviert; existing user dek_salt_version 1→2 |
+| Scope-Tokens KC2 | T-1 oder im Window | Doppler `mcp-knowledge2` set `SERVICE_TOKEN_ERASE`, `SERVICE_TOKEN_SYNC`, `SERVICE_TOKEN_OPS` (32+ Zeichen je) | SEC-K-009 KC2-side scope-binding |
+| Scope-Tokens approval2 | unmittelbar nach KC2-Step | Doppler `mcp-approval2` set `MCP_KNOWLEDGE_SERVICE_TOKEN_ERASE/SYNC/OPS` auf identische Werte | SEC-K-009 approval2-side picks scoped Token pro Path |
+| Erase-Receipt enforcen | nach Smoke-OK | Doppler `mcp-knowledge2` set `REQUIRE_ERASE_RECEIPT=true` | SEC-K-016 + MUSS-§4.1.2 enforced |
+| Legacy SERVICE_TOKEN entfernen | nach 1 Tag Beobachtung | Doppler `mcp-knowledge2` rotate `SERVICE_TOKEN` auf ungültig | admin-equivalence weg, Defense-in-Depth komplett |
+| Manuel-Invite 2. User | T+1 oder später | approval2 PWA Admin-View | Multi-User-Activation
 
 ### 5.2 Cutover-Window (Day 0)
 
 **Reihenfolge: KC2 zuerst, weil approval2 ohne KC2 graceful läuft, aber nicht umgekehrt.**
 
+**Anmerkung 2026-05-17:** Schritte zu "feat/as3-cutover → main merge" sind ÜBERHOLT — beide Branches sind seit Wochen auf main konsolidiert. Migrations sind auto-applied per `release_command` in `fly.toml`. Window konkretisiert sich auf: Service-Updates + Smoke + Sprint-Aktivierung.
+
 | Zeit | Schritt | Erwartung |
 |---|---|---|
-| T+0 | Cutover-Window start, beide Services in Pilot-Stage anhalten | Services off |
-| T+5min | `feat/as3-cutover` → `main` merge in mcp-knowledge2 | branch up-to-date |
-| T+10min | KC2 Migration 0005 (users + invites + signing_keys) anwenden | migration applied |
-| T+15min | KC2 Service deployen (Hetzner/Fly/Cloud-Run) | `/health` 200 |
-| T+20min | KC2 Smoke: `GET /.well-known/oauth-authorization-server` | 200 + RFC-konform |
-| T+25min | KC2 Bootstrap: First-Login als Admin (Operator login via Google) | `users` row mit `role='admin'` |
-| T+30min | KC2 Smoke: Claude.ai DCR + Auth-Code-Flow + `tools/list` | tools list grün |
-| T+40min | `feat/as3-cutover` → `main` merge in mcp-approval2 | branch up-to-date |
-| T+45min | approval2 Service deployen mit `MCP_KNOWLEDGE_URL` + `MCP_KNOWLEDGE_SERVICE_TOKEN` gesetzt | `/health` 200 |
-| T+50min | approval2 Smoke: Login via Google, Session-Cookie da | login ok |
-| T+55min | approval2 → KC2 OBO-Smoke: User-Sync rüber, KC2 sieht den User | sync ok |
-| T+60min | PWA-Smoke: Storage-Tab listet Objects (alle 0 in frischer DB) | empty list ok |
-| T+65min | Claude.ai → approval2 Smoke: DCR + Auth + `tools/list` enthält KC-Wrappers | wrapper visible |
-| T+70min | Approval-E2E: Test-Tool `objects.create` mit Approval-Flow → Approve → KC2-Audit zeigt `via_proxy=true` | audit row visible |
-| T+80min | Direkt-Pfad-Sanity: Claude.ai stop approval2, KC2 direkt erreichbar | direct path works |
-| T+85min | Restore approval2, finaler Smoke | both paths green |
-| T+90min | Cutover-Window-Ende, beide Services live | done |
+| T-0 | v1-mcp-approval (CF Workers) in **Read-Only-Banner** schalten (PWA-Hinweis "Wartung — neue Instanz folgt") | v1 informativ ausgegraut |
+| T+0 | Doppler `mcp-knowledge2` set `SERVICE_TOKEN_ERASE/SYNC/OPS` (3× je 32+ Zeichen) | secret-set ok |
+| T+2min | KC2-Service stop (Fly machine stop), `tsx scripts/re-encrypt-dek-v2.ts` lokal gegen prod-DB | exit 0, users.dek_salt_version=2 |
+| T+10min | KC2 Service start, `/health/ready` 200 | service back up |
+| T+12min | Doppler `mcp-approval2` set `MCP_KNOWLEDGE_SERVICE_TOKEN_ERASE/SYNC/OPS` auf gleiche Werte | secret-set ok |
+| T+15min | approval2 Service neudeployen damit Boot die neuen Secrets liest | `/health` 200 |
+| T+20min | Login via Google am v2 PWA (`app2.ai-toolhub.org`) | Session-Cookie da |
+| T+25min | PWA Storage-Tab → "All" → Listing zeigt eigene Objects | **kein 'missing bearer'-Error mehr** — OBO-JWT-Proxy live |
+| T+30min | KC2-Audit-Log Check: einträge zeigen `via_proxy=true`, `approval_id` gesetzt bei writes | audit ok |
+| T+40min | Doppler `mcp-knowledge2` set `REQUIRE_ERASE_RECEIPT=true` + KC2 Reload (machine restart) | flag aktiv |
+| T+45min | Erase-Smoke: GDPR-erase-Test-User über approval2-Admin → KC2-Audit erfasst erase, Receipt-JWS validated | erase row in audit |
+| T+50min | Doppler `mcp-knowledge2` rotate legacy `SERVICE_TOKEN` auf ungültig | scope-tokens ONLY |
+| T+55min | Final-Smoke: PWA Storage-Tab + Claude.ai MCP-Connect + Approval-Flow E2E | alles grün |
+| T+60min | v1-mcp-approval-Worker stop oder DNS auf v2 umstellen | v1 retired |
+| T+65min | Cutover-Window-Ende, v2 ist primary | done |
 
-**Total Window: ~90 min** bei klarem Setup. +30-60 min Puffer für Debugging.
+**Total Window: ~65 min** bei klarem Setup. +30-60 min Puffer für Debugging.
+
+**Smoke-Test-Kommandos (während Window):**
+- KC2-Health: `curl -s https://mcp-knowledge2.flycast/health/ready` (nur aus approval2-machine; lockdown)
+- v2-Health: `curl -s https://mcp2.ai-toolhub.org/health`
+- DCR: `curl -X POST https://mcp2.ai-toolhub.org/oauth/register -H 'content-type: application/json' -d '{"client_name":"t1","redirect_uris":["http://localhost/cb"],"token_endpoint_auth_method":"none"}'` → 201
+- OBO-Pfad: nach Login in PWA, Browser-DevTools Network → `/admin/kc-proxy/v1/objects` Response checken (200 + items)
 
 ### 5.3 Rollback-Trigger
 
