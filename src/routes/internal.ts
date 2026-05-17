@@ -78,13 +78,24 @@ export const internalRouter = new Hono()
       // UUID with the sentinel, and strip any PII-ish keys from
       // details JSON. The admin role can UPDATE audit_log (the
       // append-only GRANT-REVOKE only locks down knowledge_app).
+      //
+      // Multi-User-Backdoor-Audit (2026-05-17): strip-Liste war
+      // incomplete — `granted_to`, `target_user_id`, `shared_with` only,
+      // aber `to`, `from_id`, `to_id`, `resource_id` (alle object-ID-
+      // shaped Felder) blieben durch. Folge: nach erase-of-A würden
+      // andere User in eigenen audit-rows noch A's Object-IDs sehen
+      // (DSGVO "no traces"-Verstoß). Extended strip-Liste deckt jetzt
+      // alle bekannten user-binding-keys ab.
       const pseudoActor = await db
         .update(auditLog)
         .set({
           actorUserId: SENTINEL,
           details: sql`
             CASE WHEN ${auditLog.details} IS NULL THEN NULL
-                 ELSE ${auditLog.details} - 'granted_to' - 'target_user_id' - 'shared_with'
+                 ELSE ${auditLog.details}
+                   - 'granted_to' - 'target_user_id' - 'shared_with'
+                   - 'to' - 'from_id' - 'to_id' - 'resource_id'
+                   - 'email' - 'display_name' - 'invited_email'
             END
           `,
         })
