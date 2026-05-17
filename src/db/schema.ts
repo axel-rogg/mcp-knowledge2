@@ -72,6 +72,7 @@ export const objects = pgTable(
     expiresAt: bigint('expires_at', { mode: 'number' }),
     deletedAt: bigint('deleted_at', { mode: 'number' }),
     refcount: integer('refcount').notNull().default(0),
+    isSubdoc: boolean('is_subdoc').notNull().default(false),
     currentVersion: integer('current_version').notNull().default(1),
 
     nonce: customType<{ data: Uint8Array; driverData: Buffer }>({

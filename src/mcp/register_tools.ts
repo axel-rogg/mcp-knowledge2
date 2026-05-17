@@ -23,7 +23,10 @@ import {
   addRef,
   listIncomingRefs,
   listOutgoingRefs,
+  listRefsForObject,
   removeRef,
+  type RefView,
+  type RefsForObject,
 } from '../storage/refs.ts';
 import {
   createShare,
@@ -50,6 +53,31 @@ function jsonResult(data: unknown): CallToolResult {
     content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
     structuredContent: data,
   };
+}
+
+/**
+ * Builds a CallToolResult that includes both a JSON text-block AND one
+ * resource_link content-block per outgoing ref — MCP-spec-compliant
+ * presentation that Claude Desktop / claude.ai render as preview cards.
+ *
+ * PLAN-Ref: PLAN-document-linking §10.5 D1 (R1).
+ */
+function objectWithRefsResult(data: { refs?: RefsForObject } & Record<string, unknown>): CallToolResult {
+  const content: CallToolResult['content'] = [
+    { type: 'text', text: JSON.stringify(data, null, 2) },
+  ];
+  const outgoing = data.refs?.outgoing ?? [];
+  for (const r of outgoing) {
+    content.push({
+      type: 'resource_link',
+      uri: r.uri,
+      name: r.title ?? r.id,
+      description: r.summary ?? undefined,
+      mimeType: 'text/markdown',
+      _meta: { role: r.role, subtype: r.subtype ?? undefined },
+    } as unknown as CallToolResult['content'][number]);
+  }
+  return { content, structuredContent: data };
 }
 
 function decodeB64(s: string): Uint8Array {
@@ -133,10 +161,21 @@ export function registerAllTools(): void {
   const GetInput = z.object({
     id: z.string().uuid(),
     include_body: z.boolean().optional(),
+    /**
+     * Maximum number of outgoing+incoming refs to include in the response
+     * (default 5, max 50, set to 0 to suppress refs entirely).
+     */
+    refs_limit: z.number().int().min(0).max(50).optional(),
   });
   registerTool({
     name: 'objects.get',
-    description: 'Fetch an object by id. include_body=true returns the decrypted body (base64).',
+    description:
+      'Fetch an object by id. Returns the object plus its outgoing and incoming knowledge-graph refs (up to 5 each by default — set refs_limit=0 to suppress, max 50). ' +
+      'Roles: `resource` (linked object is part of this one — load if your task touches it, e.g. skill resource docs), ' +
+      '`references` (see-also, load only if query-relevant), ' +
+      '`depends_on` (functional prerequisite — load before executing). ' +
+      'Use `refs.outgoing[].uri` (kc://object/...) for follow-up `objects.get` calls. ' +
+      'include_body=true returns the decrypted body (base64).',
     inputSchema: zodToJsonSchema(GetInput),
     annotations: {
       title: 'Get object',
@@ -145,12 +184,15 @@ export function registerAllTools(): void {
       wysiwys: { display_template: 'Read object {{id}}' },
     },
     handler: async (args) => {
-      const { id, include_body } = GetInput.parse(args);
+      const { id, include_body, refs_limit } = GetInput.parse(args);
+      const limit = refs_limit ?? 5;
       const r = await readObject(id, { includeBody: include_body ?? false });
+      const refs = limit > 0 ? await listRefsForObject(id, limit) : undefined;
       await emitAudit({ action: 'object.read', resourceId: id, result: 'success' });
-      return jsonResult({
+      return objectWithRefsResult({
         ...r.view,
         body_b64: r.body ? Buffer.from(r.body).toString('base64') : undefined,
+        ...(refs !== undefined ? { refs } : {}),
       });
     },
   });

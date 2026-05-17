@@ -82,6 +82,7 @@ export interface ObjectView {
   pinned: boolean;
   archived: boolean;
   refcount: number;
+  isSubdoc: boolean;
   currentVersion: number;
   createdAt: number;
   updatedAt: number;
@@ -106,6 +107,7 @@ function rowToView(r: ObjectRow): ObjectView {
     pinned: r.pinned,
     archived: r.archived,
     refcount: r.refcount,
+    isSubdoc: r.isSubdoc,
     currentVersion: r.currentVersion,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,

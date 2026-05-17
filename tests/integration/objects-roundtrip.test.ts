@@ -377,6 +377,127 @@ describe('objects roundtrip — Cross-Service Contract', () => {
   });
 });
 
+// ─── PLAN-document-linking: refs in objects.get ────────────────────────────
+
+describe('refs roundtrip — PLAN-document-linking P1', () => {
+  async function create(subtype: string, title: string, description: string): Promise<string> {
+    const r = await call('POST', '/v1/objects', {
+      body: { subtype, title, description, body_b64: b64(`body of ${title}`) },
+    });
+    expect(r.status).toBe(201);
+    const j = (await r.json()) as { id: string };
+    return j.id;
+  }
+
+  async function addRef(fromId: string, toId: string, role: string): Promise<void> {
+    const r = await call('POST', `/v1/objects/${fromId}/refs`, {
+      body: { to_id: toId, role },
+    });
+    expect(r.status).toBe(204);
+  }
+
+  async function removeRef(fromId: string, toId: string, role: string): Promise<void> {
+    const r = await call('DELETE', `/v1/objects/${fromId}/refs`, {
+      body: { to_id: toId, role },
+    });
+    expect(r.status).toBe(204);
+  }
+
+  it('GET /objects/:id includes refs.outgoing[] with title+summary+uri by default', async () => {
+    const skill = await create('skill_manifest', 'PDF-Handling', 'Skill for PDF ops');
+    const doc1 = await create('doc', 'PDF-API-Reference', 'pdfplumber + PyPDF2 API');
+    await addRef(skill, doc1, 'resource');
+
+    const r = await call('GET', `/v1/objects/${skill}`);
+    expect(r.status).toBe(200);
+    const j = (await r.json()) as {
+      id: string;
+      refs: {
+        outgoing: Array<{ role: string; id: string; title: string; summary: string; uri: string; subtype: string }>;
+        incoming: Array<unknown>;
+        truncated: { outgoing: boolean; incoming: boolean };
+      };
+    };
+    expect(j.refs.outgoing).toHaveLength(1);
+    expect(j.refs.outgoing[0]!.role).toBe('resource');
+    expect(j.refs.outgoing[0]!.id).toBe(doc1);
+    expect(j.refs.outgoing[0]!.title).toBe('PDF-API-Reference');
+    expect(j.refs.outgoing[0]!.summary).toBe('pdfplumber + PyPDF2 API');
+    expect(j.refs.outgoing[0]!.uri).toBe(`kc://object/${doc1}`);
+    expect(j.refs.outgoing[0]!.subtype).toBe('doc');
+    expect(j.refs.truncated.outgoing).toBe(false);
+  });
+
+  it('refs_limit=0 suppresses the refs block entirely', async () => {
+    const a = await create('doc', 'A', 'sum a');
+    const b = await create('doc', 'B', 'sum b');
+    await addRef(a, b, 'references');
+
+    const r = await call('GET', `/v1/objects/${a}?refs_limit=0`);
+    const j = (await r.json()) as Record<string, unknown>;
+    expect(j.refs).toBeUndefined();
+  });
+
+  it('truncates with boolean flag when more refs than limit', async () => {
+    const parent = await create('skill_manifest', 'Parent', 'sum');
+    const targets = await Promise.all(
+      Array.from({ length: 6 }, (_, i) => create('doc', `T${i}`, `sum ${i}`)),
+    );
+    for (const t of targets) await addRef(parent, t, 'resource');
+
+    const r = await call('GET', `/v1/objects/${parent}?refs_limit=3`);
+    const j = (await r.json()) as {
+      refs: { outgoing: unknown[]; truncated: { outgoing: boolean; incoming: boolean } };
+    };
+    expect(j.refs.outgoing).toHaveLength(3);
+    expect(j.refs.truncated.outgoing).toBe(true);
+  });
+
+  it('M:N is_subdoc stays true while ≥1 resource ref remains, flips false on last', async () => {
+    const sk1 = await create('skill_manifest', 'Skill-1', 'sum');
+    const sk2 = await create('skill_manifest', 'Skill-2', 'sum');
+    const doc = await create('doc', 'Shared-Doc', 'sum');
+
+    // both skills point at doc as resource
+    await addRef(sk1, doc, 'resource');
+    await addRef(sk2, doc, 'resource');
+
+    // remove sk1→doc — doc.is_subdoc should still be true (sk2 still points)
+    await removeRef(sk1, doc, 'resource');
+    let r = await call('GET', `/v1/objects/${doc}`);
+    let j = (await r.json()) as { isSubdoc: boolean };
+    expect(j.isSubdoc).toBe(true);
+
+    // remove sk2→doc — now last resource ref gone, is_subdoc flips false
+    await removeRef(sk2, doc, 'resource');
+    r = await call('GET', `/v1/objects/${doc}`);
+    j = (await r.json()) as { isSubdoc: boolean };
+    expect(j.isSubdoc).toBe(false);
+  });
+
+  it('incoming refs show source (parent) info with denormalised title+summary', async () => {
+    const skill = await create('skill_manifest', 'P', 'parent summary');
+    const doc = await create('doc', 'D', 'doc summary');
+    await addRef(skill, doc, 'resource');
+
+    const r = await call('GET', `/v1/objects/${doc}`);
+    const j = (await r.json()) as {
+      refs: { incoming: Array<{ role: string; id: string; title: string; summary: string; uri: string }> };
+    };
+    expect(j.refs.incoming).toHaveLength(1);
+    expect(j.refs.incoming[0]!.id).toBe(skill);
+    expect(j.refs.incoming[0]!.title).toBe('P');
+    expect(j.refs.incoming[0]!.summary).toBe('parent summary');
+    expect(j.refs.incoming[0]!.uri).toBe(`kc://object/${skill}`);
+  });
+
+  it('refs_limit > 50 returns 400', async () => {
+    const id = await create('doc', 'x', 'sum');
+    const r = await call('GET', `/v1/objects/${id}?refs_limit=51`);
+    expect(r.status).toBe(400);
+  });
+});
+
 describe('shares roundtrip — Cross-Service Contract', () => {
   it('POST /v1/objects/:id/shares requires snake_case body { granted_to, scope }', async () => {
     const created = (await (

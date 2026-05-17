@@ -71,6 +71,17 @@ export interface CallToolResult {
     | { type: 'text'; text: string }
     | { type: 'image'; data: string; mimeType: string }
     | { type: 'resource'; resource: { uri: string; mimeType?: string; text?: string } }
+    // MCP-Spec 2025-11-25: resource_link is a pointer (uri + name + optional
+    // description/mimeType) without the body, ideal for lazy-loaded references.
+    // Used by PLAN-document-linking objects.get response.
+    | {
+        type: 'resource_link';
+        uri: string;
+        name: string;
+        description?: string | undefined;
+        mimeType?: string | undefined;
+        _meta?: Record<string, unknown> | undefined;
+      }
   >;
   isError?: boolean;
   structuredContent?: unknown;

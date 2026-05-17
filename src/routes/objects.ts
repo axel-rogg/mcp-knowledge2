@@ -10,7 +10,13 @@ import {
   softDeleteObject,
   updateObject,
 } from '../storage/objects.ts';
-import { addRef, listIncomingRefs, listOutgoingRefs, removeRef } from '../storage/refs.ts';
+import {
+  addRef,
+  listIncomingRefs,
+  listOutgoingRefs,
+  listRefsForObject,
+  removeRef,
+} from '../storage/refs.ts';
 import { listRevisions, readRevision } from '../storage/revisions.ts';
 import { addTag, listTags, removeTag } from '../storage/tags.ts';
 import { assertEmbedQuota, assertObjectQuota, releaseObjectQuota } from '../quota/check.ts';
@@ -137,13 +143,23 @@ export const objectsRouter = new Hono()
   })
   .get('/objects/:id', async (c) => {
     const id = c.req.param('id');
-    const includeBody = c.req.query('expand')?.split(',').includes('body') ?? false;
+    const expand = c.req.query('expand')?.split(',') ?? [];
+    const includeBody = expand.includes('body');
+    // PLAN-document-linking §3.2: refs included by default. Pass
+    // `?refs_limit=0` to suppress entirely; `?refs_limit=N` to cap.
+    const refsLimitRaw = c.req.query('refs_limit');
+    const refsLimit = refsLimitRaw !== undefined ? Number.parseInt(refsLimitRaw, 10) : 5;
+    if (!Number.isFinite(refsLimit) || refsLimit < 0 || refsLimit > 50) {
+      throw errBadRequest('refs_limit must be between 0 and 50');
+    }
     try {
       const r = await readObject(id, { includeBody });
+      const refs = refsLimit > 0 ? await listRefsForObject(id, refsLimit) : null;
       await emitAudit({ action: 'object.read', resourceId: id, result: 'success' });
       return c.json({
         ...r.view,
         body_b64: r.body ? Buffer.from(r.body).toString('base64') : undefined,
+        ...(refs !== null ? { refs } : {}),
       });
     } catch (e) {
       // F-25: log RLS/ownership denials explicitly so SIEM can see them
