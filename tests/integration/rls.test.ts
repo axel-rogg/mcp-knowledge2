@@ -211,7 +211,7 @@ describe('RLS: object_vectors owner-only', () => {
       await appClient.query(
         `INSERT INTO object_vectors (object_id, embedding, model, embedded_at)
          VALUES ($1, $2::vector, 'test-model', 0)`,
-        [id, `[${Array.from({ length: 768 }, () => 0).join(',')}]`],
+        [id, `[${Array.from({ length: 1024 }, () => 0).join(',')}]`],
       );
       // Grant read to B
       await appClient.query(
@@ -237,7 +237,7 @@ describe('RLS: object_vectors owner-only', () => {
       appClient.query(
         `INSERT INTO object_vectors (object_id, embedding, model, embedded_at)
          VALUES ($1, $2::vector, 'test-model', 0)`,
-        [id, `[${Array.from({ length: 768 }, () => 0).join(',')}]`],
+        [id, `[${Array.from({ length: 1024 }, () => 0).join(',')}]`],
       ),
     );
 
@@ -254,7 +254,7 @@ describe('RLS: object_vectors owner-only', () => {
       appClient.query(
         `INSERT INTO object_vectors (object_id, embedding, model, embedded_at)
          VALUES ($1, $2::vector, 'test-model', 0)`,
-        [id, `[${Array.from({ length: 768 }, () => 0).join(',')}]`],
+        [id, `[${Array.from({ length: 1024 }, () => 0).join(',')}]`],
       ),
     );
     expect(err.message).toMatch(/row-level security|violates/i);
@@ -522,7 +522,12 @@ describe('RLS: share_grants self-or-owner', () => {
     expect(asB.rows.length).toBe(1);
   });
 
-  it('blocks B from revoking a grant they did not create', async () => {
+  // Grantee CAN revoke their own grant (grants_self USING/WITH CHECK passes
+  // because granted_to=current_user). That's "decline a share" — a legitimate
+  // UX. So we test the *third-party* case: someone neither granted-by nor
+  // granted-to has no business touching the row.
+  it('blocks third-party from revoking somebody else grants', async () => {
+    const THIRD = '33333333-3333-3333-3333-333333333333';
     const id = await insertObject(USER_A, { title: 'shareable' });
     await asUser(USER_A, () =>
       appClient.query(
@@ -532,10 +537,10 @@ describe('RLS: share_grants self-or-owner', () => {
       ),
     );
 
-    // B tries to revoke the grant. UPDATE policy requires granted_by = current_user.
-    // UPDATE on a row that fails USING is treated as 0-row-update (no error),
-    // so verify by checking revoked_at is still NULL after B's attempt.
-    await asUser(USER_B, () =>
+    // THIRD party UPDATE: grants_self USING blocks it (granted_to!=THIRD AND
+    // granted_by!=THIRD), and grants_update_by_owner USING blocks it. So the
+    // UPDATE hits 0 rows — no error, just no effect.
+    await asUser(THIRD, () =>
       appClient.query(
         `UPDATE share_grants SET revoked_at = 999 WHERE resource_id = $1`,
         [id],
