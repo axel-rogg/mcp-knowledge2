@@ -98,7 +98,13 @@ kill_timeout    = "30s"
 
 [http_service]
   internal_port        = 8080
-  force_https          = true
+  # force_https = false seit Lockdown 2026-05-17: KC2 ist Internal-Only
+  # erreichbar via approval2 → .flycast (Fly-Proxy auf Port 80). Mit
+  # force_https=true wuerde Proxy 301 → https://... redirecten, aber das
+  # .flycast-Hostname hat keinen TLS-Cert (Fly-Cert ist nur fuer .fly.dev).
+  # Public-Path zu mcp-knowledge2.fly.dev existiert post-Lockdown nicht mehr,
+  # daher keine Sicherheits-Regression durch den Switch.
+  force_https          = false
   auto_stop_machines   = "stop"
   auto_start_machines  = true
   min_machines_running = 1
