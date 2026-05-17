@@ -293,7 +293,6 @@ const DISPLAY_NAME_MAX = 100;
 function sanitizeDisplayName(raw: string | null | undefined): string | null {
   if (raw === null || raw === undefined) return null;
   // Strip control chars (Cc category, U+0000-U+001F + U+007F-U+009F).
-  // eslint-disable-next-line no-control-regex
   const stripped = raw.replace(/[\x00-\x1F\x7F-\x9F]/g, '');
   const trimmed = stripped.trim();
   if (trimmed.length === 0) return null;
