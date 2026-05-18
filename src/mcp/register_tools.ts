@@ -42,6 +42,8 @@ import { requireContext } from '../lib/context.ts';
 import { errBadRequest } from '../lib/errors.ts';
 import { registerTool } from './tools.ts';
 import type { CallToolResult } from './types.ts';
+import { zodToJsonSchema } from './json-schema.ts';
+import { registerNotesTools } from './tools/notes.ts';
 
 // Subtype is free-form caller-convention post-ADR-0004. Storage does not
 // enforce the value; the regex below is an identifier-shape guard against
@@ -618,6 +620,10 @@ export function registerAllTools(): void {
       return jsonResult(await getUploadStatus(upload_id));
     },
   });
+
+  // Phase-1 Wrapper-Migration aus approval2 (2026-05-18).
+  // Spec: docs/plans/active/PLAN-tool-surface-as-storage-canonical.md
+  registerNotesTools();
 }
 
 // ─── Hand-rolled zod→JSON-Schema (no extra dep) ────────────────────────────
@@ -625,51 +631,6 @@ export function registerAllTools(): void {
 // MCP-spec is permissive on the schema shape — minimal JSON-Schema works.
 // We avoid `zod-to-json-schema` to keep dependencies tight.
 
-function zodToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
-  return walk(schema);
-}
-
-function walk(schema: z.ZodTypeAny): Record<string, unknown> {
-  // unwrap optional/default/nullable for descend
-  if (schema instanceof z.ZodOptional || schema instanceof z.ZodDefault) {
-    return walk((schema._def as { innerType: z.ZodTypeAny }).innerType);
-  }
-  if (schema instanceof z.ZodNullable) {
-    const inner = walk((schema._def as { innerType: z.ZodTypeAny }).innerType);
-    const innerType = inner['type'];
-    if (typeof innerType === 'string') {
-      inner['type'] = [innerType, 'null'];
-    }
-    return inner;
-  }
-  if (schema instanceof z.ZodString) return { type: 'string' };
-  if (schema instanceof z.ZodNumber) return { type: 'number' };
-  if (schema instanceof z.ZodBoolean) return { type: 'boolean' };
-  if (schema instanceof z.ZodEnum) {
-    return { type: 'string', enum: schema._def.values };
-  }
-  if (schema instanceof z.ZodArray) {
-    return { type: 'array', items: walk(schema._def.type as z.ZodTypeAny) };
-  }
-  if (schema instanceof z.ZodRecord) {
-    return { type: 'object', additionalProperties: walk(schema._def.valueType as z.ZodTypeAny) };
-  }
-  if (schema instanceof z.ZodObject) {
-    const shape = schema.shape as Record<string, z.ZodTypeAny>;
-    const properties: Record<string, Record<string, unknown>> = {};
-    const required: string[] = [];
-    for (const [key, value] of Object.entries(shape)) {
-      properties[key] = walk(value);
-      if (!(value instanceof z.ZodOptional) && !(value instanceof z.ZodDefault)) {
-        required.push(key);
-      }
-    }
-    const out: Record<string, unknown> = { type: 'object', properties };
-    if (required.length > 0) out['required'] = required;
-    return out;
-  }
-  if (schema instanceof z.ZodUnion) {
-    return { anyOf: schema._def.options.map((o: z.ZodTypeAny) => walk(o)) };
-  }
-  return {};
-}
+// zodToJsonSchema moved to ./json-schema.ts (Phase-1 Wrapper-Migration
+// 2026-05-18). Sub-Tool-Files (notes.ts, lists.ts, ...) importieren ihn von
+// dort — Zirkular-Import vermieden.

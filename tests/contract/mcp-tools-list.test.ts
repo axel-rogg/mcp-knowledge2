@@ -74,12 +74,16 @@ describe('KC2 tools/list — annotations contract (approval2 consumer)', () => {
     }
   });
 
-  it('annotations.sensitivity is one of read|write|destructive (approval2 maps that)', () => {
+  it('annotations.sensitivity is one of read|write|danger|destructive (approval2 maps that)', () => {
+    // 'destructive' bleibt als Legacy-Alias (bestehende KC2-Tools wie
+    // objects.delete). Phase-1-Wrapper-Migration (PLAN-tool-surface-as-
+    // storage-canonical.md) setzt 'danger' — approval2's Forwarder reicht
+    // das direkt durch ohne Mapping-Fallback.
     const tools = getRegisteredTools();
     for (const t of tools) {
       const a = t.annotations as { sensitivity?: string };
       if (a.sensitivity !== undefined) {
-        expect(['read', 'write', 'destructive']).toContain(a.sensitivity);
+        expect(['read', 'write', 'danger', 'destructive']).toContain(a.sensitivity);
       }
     }
   });

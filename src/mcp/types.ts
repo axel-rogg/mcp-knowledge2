@@ -49,8 +49,22 @@ export interface ToolDefinition {
   inputSchema: Record<string, unknown>;
   annotations?: {
     title?: string;
-    sensitivity?: 'read' | 'write' | 'destructive';
+    /** approval2-Forwarder-kompatibel (resolveSensitivity in
+     * mcp-approval2/apps/server/src/tools/kc_wrappers/index.ts erwartet
+     * 'read'|'write'|'danger'). 'destructive' weiter erlaubt als Legacy-
+     * Alias für bestehende objects.delete-Annotations — der Forwarder
+     * mapped es via destructiveHint=true → 'danger'. */
+    sensitivity?: 'read' | 'write' | 'danger' | 'destructive';
     write?: boolean;
+    /** MCP-standard hints (consumed by approval2's resolveSensitivity
+     * fallback chain). */
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+    /** Tag-Filter für Auto-Forwarder: z.B. ['low-level'] blendet das Tool
+     * in approval2's tools/list aus (PLAN §2.8). */
+    tags?: string[];
     /** approval2 Welle-3 compatibility: when set, approval2's PWA can
      *  render the call before execution. Mustache-style template. */
     wysiwys?: { display_template: string };
