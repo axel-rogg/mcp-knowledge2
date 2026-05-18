@@ -53,27 +53,11 @@ async function main() {
     // (knowledge_app = DB-owner) machen, kein SET ROLE noetig.
     await ensureMigrationsTable(client);
 
-    // NACH ensureMigrationsTable: versuche SET ROLE fuer DDL-Privs. Alte
-    // Tabellen (object_revisions, users, etc.) wurden initial unter einer
-    // anderen Role erstellt — typischerweise via DATABASE_ADMIN_URL beim
-    // Bootstrap, also knowledge_admin als Owner. Wir probieren in
-    // Preference-Order: knowledge_admin → neon_superuser → fortsetzen
-    // als connecting-role.
-    const setRoleCandidates = ['knowledge_admin', 'neon_superuser'];
-    let activeRole = '<connecting>';
-    for (const candidate of setRoleCandidates) {
-      try {
-        await client.query(`SET ROLE ${candidate}`);
-        activeRole = candidate;
-        console.warn(`▸ migrate.ts: SET ROLE ${candidate} succeeded`);
-        break;
-      } catch {
-        /* try next */
-      }
-    }
-    if (activeRole === '<connecting>') {
-      console.warn('▸ migrate.ts: no SET ROLE candidate worked, using connecting role');
-    }
+    // Verified 2026-05-18: alle public-Tabellen sind knowledge_app-owned.
+    // Kein SET ROLE noetig — als Owner haben wir implicit alle Privilegien
+    // auf eigene Tabellen (REFERENCES + ALTER + GRANT-Option).
+    // FK-Constraints in Mig 0020/0026 sind DO-Block-gewrappt mit
+    // graceful skip auf insufficient_privilege als defense-in-depth.
 
     const applied = await appliedSet(client);
     const files = (await readdir(MIGRATIONS_DIR))
