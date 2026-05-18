@@ -24,14 +24,15 @@ async function appliedSet(client: pg.Client): Promise<Set<string>> {
 }
 
 async function main() {
-  // Migrations need DDL privileges (CREATE/ALTER TABLE, GRANT, FK constraints
-  // REFERENCES users). Prefer DATABASE_ADMIN_URL (Neon superuser-tier) over
-  // DATABASE_URL (knowledge_app, RLS-bound, no REFERENCES on users).
-  // Fall back to DATABASE_URL only when ADMIN_URL is not set — for local dev
-  // where one role covers both.
-  const url = process.env.DATABASE_ADMIN_URL ?? process.env.DATABASE_URL;
+  // DATABASE_URL preferred (knowledge_app role, db owner, has CREATE on
+  // public). DATABASE_ADMIN_URL kann fehlende USAGE-on-public haben (Neon-
+  // Default fuer non-owner-roles). Wenn eine Migration REFERENCES auf
+  // shared-tabellen wie `users` braucht (e.g. 0020, 0025), muss der
+  // Operator zuerst die Grants pre-deploy fahren — siehe
+  // docs/runbooks/runbook-neon-role-grants.md.
+  const url = process.env.DATABASE_URL ?? process.env.DATABASE_ADMIN_URL;
   if (!url) {
-    console.error('DATABASE_ADMIN_URL or DATABASE_URL must be set');
+    console.error('DATABASE_URL or DATABASE_ADMIN_URL must be set');
     process.exit(1);
   }
   const client = new pg.Client({ connectionString: url });
