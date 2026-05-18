@@ -336,6 +336,45 @@ export const groupMembers = pgTable(
   }),
 );
 
+// ─── Rewrap Jobs (Phase 2-7, Migration 0026) ───────────────────────────────
+//
+// Async-Worker-Queue fuer Group-Master-Rotation bei >1000 share_grants.
+// Producer: removeMember (storage/groups.ts). Consumer: storage/rewrap.ts.
+
+export const rewrapJobs = pgTable(
+  'rewrap_jobs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    groupId: uuid('group_id').notNull(),
+    oldMasterVersion: integer('old_master_version').notNull(),
+    newMasterVersion: integer('new_master_version').notNull(),
+    status: text('status').notNull().default('pending'),
+    totalGrants: integer('total_grants').notNull(),
+    processedGrants: integer('processed_grants').notNull().default(0),
+    batchSize: integer('batch_size').notNull().default(100),
+    triggeredBy: uuid('triggered_by'),
+    triggerReason: text('trigger_reason').notNull(),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    startedAt: bigint('started_at', { mode: 'number' }),
+    completedAt: bigint('completed_at', { mode: 'number' }),
+    lastError: text('last_error'),
+    oldMasterKmsWrapped: customType<{ data: Uint8Array; driverData: Buffer }>({
+      dataType() {
+        return 'bytea';
+      },
+      toDriver(v) {
+        return Buffer.from(v);
+      },
+      fromDriver(v) {
+        return new Uint8Array(v as Buffer);
+      },
+    })('old_master_kms_wrapped').notNull(),
+  },
+  (t) => ({
+    group: index('idx_rewrap_jobs_group').on(t.groupId, t.status),
+  }),
+);
+
 // ─── Object Vectors (pgvector) ─────────────────────────────────────────────
 
 export const objectVectors = pgTable(

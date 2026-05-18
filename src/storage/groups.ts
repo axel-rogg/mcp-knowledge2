@@ -19,7 +19,7 @@
 // Hard-Cap MAX_GRANTS_PER_GROUP=1000 fuer Member-Remove (Crypto-Review §3.4).
 
 import { and, eq, isNull, ne, sql } from 'drizzle-orm';
-import { groups, groupMembers, shareGrants } from '../db/schema.ts';
+import { groups, groupMembers, rewrapJobs, shareGrants } from '../db/schema.ts';
 import { withUserTx } from '../db/client.ts';
 import { kms } from '../adapters/kms/index.ts';
 import {
@@ -34,7 +34,6 @@ import {
 } from './group-crypto.ts';
 import { requireContext } from '../lib/context.ts';
 import {
-  AppError,
   errBadRequest,
   errForbidden,
   errInternal,
@@ -327,7 +326,10 @@ export async function removeMember(
       throw errForbidden('only group owner can remove members');
     }
 
-    // 2. Count check: Hard-Cap fuer sync rotation
+    // 2. Count check: bei >MAX_GRANTS_PER_GROUP_FOR_SYNC_ROTATION wird
+    //    der share_grants-Re-Wrap in einen async-Worker-Job ausgelagert
+    //    (P2-7, Mig 0026). Die TX-1 rotiert dann nur Master + members +
+    //    INSERTed rewrap_jobs-Row. Worker prozessiert grants in Batches.
     const grantCountRows = await db
       .select({ c: sql<number>`count(*)::int` })
       .from(shareGrants)
@@ -338,14 +340,7 @@ export async function removeMember(
         ),
       );
     const grantCount = grantCountRows[0]?.c ?? 0;
-    if (grantCount > MAX_GRANTS_PER_GROUP_FOR_SYNC_ROTATION) {
-      throw new AppError(
-        503,
-        'https://problems.knowledge2/group-too-large-for-sync-rotation',
-        `group has ${grantCount} active grants, exceeding sync-rotation cap ${MAX_GRANTS_PER_GROUP_FOR_SYNC_ROTATION}. Async Re-Wrap-Worker (Phase 2) required.`,
-        { group_id: groupId, grant_count: grantCount, cap: MAX_GRANTS_PER_GROUP_FOR_SYNC_ROTATION },
-      );
-    }
+    const useAsyncWorker = grantCount > MAX_GRANTS_PER_GROUP_FOR_SYNC_ROTATION;
 
     // 3. Old-Master entpacken (via Owner-Member-Row)
     const ownerMemberRows = await db
@@ -433,36 +428,56 @@ export async function removeMember(
     }
 
     // 8. Re-wrap aktive share_grants.wrapped_object_dek (alter Master →
-    //    neuer Master)
-    const activeGrants = await db
-      .select()
-      .from(shareGrants)
-      .where(
-        and(
-          eq(shareGrants.grantedToGroupId, groupId),
-          isNull(shareGrants.revokedAt),
-        ),
-      );
-    for (const g of activeGrants) {
-      if (!g.wrappedObjectDek) continue;
-      // Decapsulate object-DEK mit altem Master, re-wrap mit neuem
-      const objectDek = await unwrapPerObjectDekFromGroup(
-        g.wrappedObjectDek,
-        oldMaster,
-        g.resourceId,
-      );
-      const newWrappedObjectDek = await wrapPerObjectDekForGroup(
-        objectDek,
-        newMasterCreation.plaintext,
-        g.resourceId,
-      );
-      await db
-        .update(shareGrants)
-        .set({
-          wrappedObjectDek: newWrappedObjectDek,
-          groupMasterVersion: newVersion,
-        })
-        .where(eq(shareGrants.id, g.id));
+    //    neuer Master). Bei >MAX_GRANTS_PER_GROUP_FOR_SYNC_ROTATION wird
+    //    das in einen async-Worker-Job ausgelagert (P2-7).
+    if (useAsyncWorker) {
+      // KMS-Wrap des OLD-Master fuer den Worker. Plaintext-Master wird
+      // hier NICHT in der DB persistiert — nur die KMS-wrapped Form.
+      const oldMasterKmsWrapped = await kms().wrapBytes(oldMaster);
+      await db.insert(rewrapJobs).values({
+        groupId,
+        oldMasterVersion: group.masterVersion,
+        newMasterVersion: newVersion,
+        status: 'pending',
+        totalGrants: grantCount,
+        processedGrants: 0,
+        batchSize: 100,
+        triggeredBy: ctx.userId!,
+        triggerReason: `member-remove:${userIdToRemove}`,
+        createdAt: nowMs(),
+        oldMasterKmsWrapped,
+      });
+    } else {
+      const activeGrants = await db
+        .select()
+        .from(shareGrants)
+        .where(
+          and(
+            eq(shareGrants.grantedToGroupId, groupId),
+            isNull(shareGrants.revokedAt),
+          ),
+        );
+      for (const g of activeGrants) {
+        if (!g.wrappedObjectDek) continue;
+        // Decapsulate object-DEK mit altem Master, re-wrap mit neuem
+        const objectDek = await unwrapPerObjectDekFromGroup(
+          g.wrappedObjectDek,
+          oldMaster,
+          g.resourceId,
+        );
+        const newWrappedObjectDek = await wrapPerObjectDekForGroup(
+          objectDek,
+          newMasterCreation.plaintext,
+          g.resourceId,
+        );
+        await db
+          .update(shareGrants)
+          .set({
+            wrappedObjectDek: newWrappedObjectDek,
+            groupMasterVersion: newVersion,
+          })
+          .where(eq(shareGrants.id, g.id));
+      }
     }
 
     // 9. Cache invalidieren fuer alte Master-Version

@@ -223,6 +223,35 @@ export const internalRouter = new Hono()
     });
     return c.json({ status: result.status, kc_user_id: result.kcUserId });
   })
+  // P2-7: async re-wrap-tick. Operator/cron-getriggert. Kein User-Context.
+  .post('/internal/rewrap-tick', requireServiceToken('ops'), async (c) => {
+    const { processRewrapJobsTick } = await import('../storage/rewrap.ts');
+    const url = new URL(c.req.url);
+    const maxJobs = Number(url.searchParams.get('max_jobs') ?? '5');
+    const batchSize = Number(url.searchParams.get('batch_size') ?? '100');
+    const result = await processRewrapJobsTick({ maxJobs, batchSize });
+    return c.json({
+      picked: result.picked,
+      processed_grants: result.processedGrants,
+      completed_jobs: result.completedJobs,
+      errors: result.errors,
+    });
+  })
+  .get('/internal/rewrap-jobs', requireServiceToken('ops'), async (c) => {
+    const { listRewrapJobs } = await import('../storage/rewrap.ts');
+    const url = new URL(c.req.url);
+    const groupId = url.searchParams.get('group_id') ?? undefined;
+    const status = url.searchParams.get('status') ?? undefined;
+    const limitRaw = url.searchParams.get('limit');
+    const limit = limitRaw ? Number(limitRaw) : undefined;
+    const items = await listRewrapJobs({
+      ...(groupId ? { groupId } : {}),
+      ...(status ? { status } : {}),
+      ...(limit ? { limit } : {}),
+    });
+    return c.json({ items });
+  })
+
   .post('/internal/health-deep', requireServiceToken('ops'), async (c) => {
     const checks: Record<string, { status: 'ok' | 'error'; detail?: string }> = {};
     try {
