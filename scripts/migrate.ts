@@ -47,7 +47,28 @@ async function main() {
   const client = new pg.Client({ connectionString: url });
   await client.connect();
   try {
+    // ensureMigrationsTable nutzt to_regclass + braucht NUR public-USAGE
+    // (read-only) wenn _migrations existiert. Wenn nicht existiert,
+    // braucht's CREATE auf public — wir koennen das mit dem connecting-role
+    // (knowledge_app = DB-owner) machen, kein SET ROLE noetig.
     await ensureMigrationsTable(client);
+
+    // NACH ensureMigrationsTable: SET ROLE neon_superuser fuer die folgenden
+    // Migrationen — alte Tabellen (object_revisions etc.) wurden initial
+    // unter einer admin-aehnlichen Rolle erstellt, ALTER TABLE braucht
+    // jetzt owner-Privilegie. neon_superuser ist Gruppe; SET ROLE
+    // aktiviert die volle DDL-Power inkl. ALTER auf admin-owned tables.
+    try {
+      await client.query(`SET ROLE neon_superuser`);
+      console.warn(
+        '▸ migrate.ts: SET ROLE neon_superuser succeeded (post-_migrations, DDL active)',
+      );
+    } catch (e) {
+      console.warn(
+        `▸ migrate.ts: SET ROLE neon_superuser unavailable (${(e as Error).message}), continuing`,
+      );
+    }
+
     const applied = await appliedSet(client);
     const files = (await readdir(MIGRATIONS_DIR))
       .filter((f) => f.endsWith('.sql'))
