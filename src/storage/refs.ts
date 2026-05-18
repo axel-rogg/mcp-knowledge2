@@ -1,12 +1,25 @@
 // Knowledge-graph refs between objects. RLS on object_refs delegates to
 // both endpoints' objects visibility (see migrations/0001_rls.sql + 0017).
 
-import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
-import { objectRefs, objects } from '../db/schema.ts';
+import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { objectRefs, objects, shareGrants } from '../db/schema.ts';
 import { withUserTx } from '../db/client.ts';
+import { createShareWithGroup, revokeCascadeSharesFrom } from './shares.ts';
 import { requireContext } from '../lib/context.ts';
 import { errBadRequest, errNotFound } from '../lib/errors.ts';
+import { logger } from '../lib/logger.ts';
 import { nowMs } from '../lib/ids.ts';
+
+/**
+ * Roles die einen Bundle-Cascade triggern wenn parent ein Skill ist.
+ * Phase 1: nur 'resource' (Skill → Doc). Phase 2+ koennte 'recipe_ingredient'
+ * etc. ergaenzen — `BUNDLE_PARENT_SUBTYPES` muss dann analog erweitert
+ * werden.
+ *
+ * PLAN-Ref: docs/plans/active/PLAN-sharing-group-phase-1.md §7
+ */
+const BUNDLE_ROLES = ['resource'] as const;
+const BUNDLE_PARENT_SUBTYPES = ['skill_manifest'] as const;
 
 /**
  * Closed vocabulary of ref-roles (PLAN-document-linking §10.5 D4).
@@ -93,16 +106,30 @@ export async function addRef(input: AddRefInput): Promise<AddRefResult> {
   }
 
   const warnings: string[] = [];
+  // Cascade-Targets aus der TX rauspropagiert — TX-COMMIT erst, dann
+  // Cascade in separater TX (Cross-TX siehe PLAN §7).
+  const cascadeTargets: Array<{ groupId: string; scope: 'read' | 'write' }> = [];
+  let cascadeChildId: string | null = null;
+  let cascadeParentId: string | null = null;
+
   await withUserTx(ctx.userId, ctx.requestId, async (db) => {
     // verify both ends visible under RLS, plus pull target description for
     // soft-summary-validation (PLAN-doc-linking §3.4 + P5).
+    // Phase 1 sharing: zusätzlich subtype + cascade_on_share laden für
+    // BUNDLE_ROLES-Filter (Item 7 Cascade-Hook).
     const visible = await db
-      .select({ id: objects.id, description: objects.description })
+      .select({
+        id: objects.id,
+        description: objects.description,
+        subtype: objects.subtype,
+        cascadeOnShare: objects.cascadeOnShare,
+      })
       .from(objects)
       .where(or(eq(objects.id, input.fromId), eq(objects.id, input.toId)));
     if (visible.length < 2) {
       throw errNotFound('one or both objects not found or not visible');
     }
+    const fromRow = visible.find((r) => r.id === input.fromId);
 
     const toRow = visible.find((r) => r.id === input.toId);
     if (toRow && (toRow.description === null || toRow.description.trim() === '')) {
@@ -163,14 +190,83 @@ export async function addRef(input: AddRefInput): Promise<AddRefResult> {
           .set({ isSubdoc: true })
           .where(eq(objects.id, input.toId));
       }
+
+      // ── Phase 1 sharing Cascade-Hook (Item 7) ──────────────────────
+      // 3-fach-Check: role IN BUNDLE_ROLES + parent.subtype IS 'skill_
+      // manifest' + parent.cascade_on_share=TRUE. Sammelt aktive
+      // Group-Shares des Parents; eigentliche createShareWithGroup-
+      // Calls passieren NACH dem TX-COMMIT (Cross-TX, akzeptiert für
+      // Phase 1 — bei Fail bleibt der Ref aber kein Cascade-Share, idempotent
+      // retry via repeat-addRef).
+      if (
+        (BUNDLE_ROLES as readonly string[]).includes(input.role) &&
+        fromRow &&
+        (BUNDLE_PARENT_SUBTYPES as readonly string[]).includes(fromRow.subtype ?? '') &&
+        fromRow.cascadeOnShare === true
+      ) {
+        const activeShares = await db
+          .select({
+            groupId: shareGrants.grantedToGroupId,
+            scope: shareGrants.scope,
+          })
+          .from(shareGrants)
+          .where(
+            and(
+              eq(shareGrants.resourceId, input.fromId),
+              isNull(shareGrants.revokedAt),
+            ),
+          );
+        for (const s of activeShares) {
+          if (s.groupId) {
+            cascadeTargets.push({ groupId: s.groupId, scope: s.scope as 'read' | 'write' });
+          }
+        }
+        if (cascadeTargets.length > 0) {
+          cascadeChildId = input.toId;
+          cascadeParentId = input.fromId;
+        }
+      }
     }
   });
+
+  // Cascade-Phase: NACH TX-COMMIT. Jeder Group-Share triggert eigenen
+  // createShareWithGroup-Call (eigene TX, eigener FOR UPDATE auf child-
+  // Object für Lazy-Migration). Failures werden geloggt aber re-thrown —
+  // partial-cascade ist akzeptabel, retry via repeat-addRef (ON CONFLICT
+  // im share_grants-Unique-Index macht es idempotent).
+  if (cascadeChildId && cascadeParentId && cascadeTargets.length > 0) {
+    for (const target of cascadeTargets) {
+      try {
+        await createShareWithGroup({
+          resourceId: cascadeChildId,
+          groupId: target.groupId,
+          scope: target.scope as 'read', // Phase 1 Group-Shares sind read-only
+          viaCascadeFromObjectId: cascadeParentId,
+        });
+      } catch (err) {
+        logger.warn(
+          {
+            err,
+            parent: cascadeParentId,
+            child: cascadeChildId,
+            group: target.groupId,
+          },
+          'cascade share-with-group failed (cross-TX, idempotent retry via repeat-addRef)',
+        );
+        warnings.push(
+          `cascade-share to group ${target.groupId} failed; retry by removing+re-adding the ref`,
+        );
+      }
+    }
+  }
+
   return { warnings };
 }
 
 export async function removeRef(fromId: string, toId: string, role: string): Promise<void> {
   const ctx = requireContext();
   if (!ctx.userId) throw errBadRequest('user context required');
+  let didDelete = false;
   await withUserTx(ctx.userId, ctx.requestId, async (db) => {
     const deleted = await db
       .delete(objectRefs)
@@ -179,6 +275,7 @@ export async function removeRef(fromId: string, toId: string, role: string): Pro
       )
       .returning({ fromId: objectRefs.fromId });
     if (deleted.length > 0) {
+      didDelete = true;
       await db
         .update(objects)
         .set({ refcount: sql`GREATEST(${objects.refcount} - 1, 0)` })
@@ -202,6 +299,27 @@ export async function removeRef(fromId: string, toId: string, role: string): Pro
       }
     }
   });
+
+  // ── Phase 1 sharing Cascade-Revoke (Item 7) ─────────────────────────
+  // Wenn ein BUNDLE_ROLES-Ref entfernt wurde, revoke alle Cascade-Shares
+  // mit via_cascade_from_object_id=parentId. Direkte Shares (without
+  // cascade-source) bleiben unangetastet.
+  if (didDelete && (BUNDLE_ROLES as readonly string[]).includes(role)) {
+    try {
+      const n = await revokeCascadeSharesFrom(fromId, toId);
+      if (n > 0) {
+        logger.info(
+          { parent: fromId, child: toId, revoked: n },
+          'cascade-shares revoked after removeRef',
+        );
+      }
+    } catch (err) {
+      logger.warn(
+        { err, parent: fromId, child: toId },
+        'cascade-revoke after removeRef failed (cross-TX, manual cleanup possible)',
+      );
+    }
+  }
 }
 
 export interface RefRow {

@@ -14,6 +14,7 @@ import { requireJwtOrOnBehalfOf } from './auth/require_jwt_or_obo.ts';
 import { healthRouter } from './routes/health.ts';
 import { objectsRouter } from './routes/objects.ts';
 import { sharesRouter } from './routes/shares.ts';
+import { groupsRouter } from './routes/groups.ts';
 import { searchRouter } from './routes/search.ts';
 import { uploadsRouter } from './routes/uploads.ts';
 import { internalRouter } from './routes/internal.ts';
@@ -106,6 +107,7 @@ v1.use('*', userRateLimit({ windowMs: 60_000, max: 600, name: '/v1' }));
 v1.use('*', idempotency);
 v1.route('/', objectsRouter);
 v1.route('/', sharesRouter);
+v1.route('/', groupsRouter);
 v1.route('/', searchRouter);
 v1.route('/', uploadsRouter);
 

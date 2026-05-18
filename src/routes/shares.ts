@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import {
   createShare,
+  createShareWithGroup,
   listSharedWithMe,
   listSharesForObject,
   revokeShare,
@@ -11,6 +12,13 @@ import { emitAudit } from '../observability/audit.ts';
 const CreateShareBody = z.object({
   granted_to: z.string().uuid(),
   scope: z.enum(['read', 'write']),
+  expires_at: z.number().int().nullable().optional(),
+});
+
+// Phase 1 Group-Share-Body
+const CreateShareWithGroupBody = z.object({
+  group_id: z.string().uuid(),
+  scope: z.enum(['read']), // Phase 1: nur read (write kommt mit Phase 2)
   expires_at: z.number().int().nullable().optional(),
 });
 
@@ -53,4 +61,27 @@ export const sharesRouter = new Hono()
   .get('/shared-with-me', async (c) => {
     const shares = await listSharedWithMe();
     return c.json({ items: shares });
+  })
+
+  // ─── Phase 1: Share with Group (Item 6c) ─────────────────────────────
+  .post('/objects/:id/share-with-group', async (c) => {
+    const resourceId = c.req.param('id');
+    const b = CreateShareWithGroupBody.parse(await c.req.json());
+    const share = await createShareWithGroup({
+      resourceId,
+      groupId: b.group_id,
+      scope: b.scope,
+      expiresAt: b.expires_at ?? null,
+    });
+    await emitAudit({
+      action: 'share.granted_to_group',
+      resourceId,
+      result: 'success',
+      details: {
+        group_id: b.group_id,
+        scope: b.scope,
+        via_cascade_from_object_id: share.viaCascadeFromObjectId,
+      },
+    });
+    return c.json(share, 201);
   });
