@@ -28,6 +28,7 @@ import {
   listGroupsForUser,
   removeMember,
   setReadAudit,
+  transferGroupOwnership,
 } from '../storage/groups.ts';
 import { emitAudit } from '../observability/audit.ts';
 
@@ -45,6 +46,10 @@ const AddMemberBody = z.object({
 
 const SetReadAuditBody = z.object({
   enabled: z.boolean(),
+});
+
+const TransferOwnershipBody = z.object({
+  new_owner_user_id: z.string().uuid(),
 });
 
 const UpdateGroupBody = z.object({
@@ -139,6 +144,20 @@ export const groupsRouter = new Hono()
       details: { target_user_id: userId },
     });
     return c.body(null, 204);
+  })
+
+  // ─── P2-4: Owner-Transfer ──────────────────────────────────────────────
+  .post('/groups/:id/transfer-ownership', async (c) => {
+    const groupId = c.req.param('id');
+    const b = TransferOwnershipBody.parse(await c.req.json());
+    await transferGroupOwnership(groupId, b.new_owner_user_id);
+    await emitAudit({
+      action: 'group.owner_transferred',
+      resourceId: groupId,
+      result: 'success',
+      details: { new_owner_user_id: b.new_owner_user_id },
+    });
+    return c.json({ ok: true });
   });
 
 // Reserved for PATCH /groups/:id (name/description update) — Phase 2.

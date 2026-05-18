@@ -671,6 +671,76 @@ describe('RLS: Group-Sharing Edge-Cases', () => {
     expect(r.rows[0]?.title).toBe('read-only-target');
   });
 
+  it('(p2-4-a) Owner-Transfer: Owner kann owner_id auf aktives Member updaten (Mig 0025)', async () => {
+    // RLS-Test fuer groups_owner_update mit WITH CHECK is_active_member_of.
+    const groupId = await seedGroup(USER_OWNER, { name: 'transfer-test' });
+    await addGroupMember(groupId, USER_MEMBER_1);
+
+    await appClient.query('BEGIN');
+    await appClient.query(`SELECT set_config('app.current_user', $1, true)`, [USER_OWNER]);
+    const upd = await appClient.query(
+      `UPDATE groups SET owner_id = $1 WHERE id = $2 RETURNING id`,
+      [USER_MEMBER_1, groupId],
+    );
+    await appClient.query('COMMIT');
+    expect(upd.rowCount).toBe(1);
+
+    const r = await adminClient.query<{ owner_id: string }>(
+      `SELECT owner_id FROM groups WHERE id = $1`,
+      [groupId],
+    );
+    expect(r.rows[0]?.owner_id).toBe(USER_MEMBER_1);
+  });
+
+  it('(p2-4-b) Owner-Transfer: nicht-Owner kann owner_id NICHT updaten (USING block)', async () => {
+    const groupId = await seedGroup(USER_OWNER, { name: 'forbidden-transfer' });
+    await addGroupMember(groupId, USER_MEMBER_1);
+    await addGroupMember(groupId, USER_MEMBER_2);
+
+    // USER_MEMBER_1 versucht owner_id auf sich selbst zu setzen
+    await appClient.query('BEGIN');
+    await appClient.query(`SELECT set_config('app.current_user', $1, true)`, [USER_MEMBER_1]);
+    const upd = await appClient.query(
+      `UPDATE groups SET owner_id = $1 WHERE id = $2 RETURNING id`,
+      [USER_MEMBER_1, groupId],
+    );
+    await appClient.query('COMMIT');
+    expect(upd.rowCount).toBe(0); // USING-Policy blockiert (owner_id != current_user)
+
+    const r = await adminClient.query<{ owner_id: string }>(
+      `SELECT owner_id FROM groups WHERE id = $1`,
+      [groupId],
+    );
+    expect(r.rows[0]?.owner_id).toBe(USER_OWNER);
+  });
+
+  it('(p2-4-c) Owner-Transfer: new-owner Non-Member blockt durch WITH CHECK', async () => {
+    const groupId = await seedGroup(USER_OWNER, { name: 'no-membership-transfer' });
+    // USER_NON_MEMBER ist NICHT Member
+
+    // Versuch loest WITH-CHECK-Violation (new owner_id ist non-member)
+    await appClient.query('BEGIN');
+    await appClient.query(`SELECT set_config('app.current_user', $1, true)`, [USER_OWNER]);
+    let rejected = false;
+    try {
+      await appClient.query(
+        `UPDATE groups SET owner_id = $1 WHERE id = $2`,
+        [USER_NON_MEMBER, groupId],
+      );
+      await appClient.query('COMMIT');
+    } catch {
+      rejected = true;
+      await appClient.query('ROLLBACK').catch(() => undefined);
+    }
+    expect(rejected).toBe(true);
+
+    const r = await adminClient.query<{ owner_id: string }>(
+      `SELECT owner_id FROM groups WHERE id = $1`,
+      [groupId],
+    );
+    expect(r.rows[0]?.owner_id).toBe(USER_OWNER);
+  });
+
   it('(p2-3-c) Group-Write: non-Member sieht write-grant nicht (auch nicht write)', async () => {
     const objectId = await seedObject(USER_OWNER, {
       title: 'non-member-blocked',

@@ -472,6 +472,112 @@ export async function removeMember(
   });
 }
 
+/**
+ * P2-4: Group-Owner-Transfer.
+ *
+ * Aendert `groups.owner_id` auf einen neuen User. Der neue Owner MUSS bereits
+ * ein aktives Member sein (kein "drop in") — sonst kann er ohne wrappedGroupDek
+ * den Master nicht entpacken.
+ *
+ * Aufruf-Vertrag:
+ *   - Current owner ruft auf (ctx.userId == groups.owner_id Pflicht)
+ *   - newOwnerUserId muss aktives Member sein
+ *   - Crypto-Layer bleibt UNVERAENDERT: kein Master-Rotate, kein Re-Wrap.
+ *     Owner-of-Group ist ein RLS-Authority-Bit, kein crypto-wrap-target.
+ *   - Der alte Owner wird auf role='admin' Member herabgestuft (bleibt drin
+ *     mit Read+Write-Access auf alle group-shared Content).
+ *
+ * Implications:
+ *   - Neuer Owner kann ab sofort addMember/removeMember/archiveGroup/
+ *     setReadAudit/createShareWithGroup ausfuehren.
+ *   - Alter Owner verliert diese Privilegien (RLS-side via owns_group helper).
+ *   - Beide haben weiterhin Read-/Write-Access auf alle group-shared Objects
+ *     (sofern scope='write' bei Grants) — admin-role-im-Member-Sinne.
+ *
+ * Eine TX, FOR UPDATE auf groups.id als Coordinator-Lock.
+ */
+export async function transferGroupOwnership(
+  groupId: string,
+  newOwnerUserId: string,
+): Promise<void> {
+  const ctx = requireContext();
+  if (!ctx.userId) throw errBadRequest('user context required');
+  if (newOwnerUserId === ctx.userId) {
+    throw errBadRequest('new owner must be different from current owner');
+  }
+
+  await withUserTx(ctx.userId, ctx.requestId, async (db) => {
+    // 1. FOR UPDATE auf groups.id
+    const lockedRows = await db
+      .select()
+      .from(groups)
+      .where(eq(groups.id, groupId))
+      .for('update')
+      .limit(1);
+    const group = lockedRows[0];
+    if (!group) throw errNotFound(`group ${groupId} not found`);
+    if (group.ownerId !== ctx.userId) {
+      throw errForbidden('only group owner can transfer ownership');
+    }
+    if (group.archivedAt) {
+      throw errBadRequest('cannot transfer ownership of archived group');
+    }
+
+    // 2. New-Owner muss aktives Member sein
+    const newOwnerMemberRows = await db
+      .select()
+      .from(groupMembers)
+      .where(
+        and(
+          eq(groupMembers.groupId, groupId),
+          eq(groupMembers.userId, newOwnerUserId),
+          isNull(groupMembers.removedAt),
+        ),
+      )
+      .limit(1);
+    if (newOwnerMemberRows.length === 0) {
+      throw errBadRequest(
+        `new owner ${newOwnerUserId} is not an active member — addMember first, then transfer`,
+      );
+    }
+
+    // 3. UPDATE groups.owner_id
+    await db
+      .update(groups)
+      .set({ ownerId: newOwnerUserId })
+      .where(eq(groups.id, groupId));
+
+    // 4. New-Owner-Member auf role='admin' setzen (idempotent)
+    await db
+      .update(groupMembers)
+      .set({ role: 'admin' })
+      .where(
+        and(
+          eq(groupMembers.groupId, groupId),
+          eq(groupMembers.userId, newOwnerUserId),
+          isNull(groupMembers.removedAt),
+        ),
+      );
+
+    // 5. Old-Owner-Member auf role='admin' (kein Member-Role-Downgrade — wer
+    //    Owner war hatte Admin-Privilegien, behaelt die intern weiter).
+    await db
+      .update(groupMembers)
+      .set({ role: 'admin' })
+      .where(
+        and(
+          eq(groupMembers.groupId, groupId),
+          eq(groupMembers.userId, ctx.userId!),
+          isNull(groupMembers.removedAt),
+        ),
+      );
+
+    // 6. Cache invalidieren (Helper-Cache liest owns_group dynamisch via DB
+    //    Function-Call — kein lokaler Eintrag fuer owner-id zu invalidieren.
+    //    Die Group-Master-Cache-Eintraege sind weiterhin valid).
+  });
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 function groupToView(r: typeof groups.$inferSelect): GroupView {
