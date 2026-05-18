@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS rewrap_jobs (
   total_grants        INTEGER NOT NULL,
   processed_grants    INTEGER NOT NULL DEFAULT 0,
   batch_size          INTEGER NOT NULL DEFAULT 100,
-  triggered_by        UUID REFERENCES users(id) ON DELETE SET NULL,
+  triggered_by        UUID,  -- FK auf users(id) wird unten via DO-Block angehaengt (Neon-Quirk)
   trigger_reason      TEXT NOT NULL,
   created_at          BIGINT NOT NULL,
   started_at          BIGINT,
@@ -51,6 +51,19 @@ CREATE INDEX IF NOT EXISTS idx_rewrap_jobs_status_pending
 
 CREATE INDEX IF NOT EXISTS idx_rewrap_jobs_group
   ON rewrap_jobs (group_id, status);
+
+-- Optional-FK auf users(id) — wenn die migrierende Role REFERENCES auf
+-- users hat (Neon: nicht-Owner braucht GRANT). Skip-silent sonst.
+DO $$ BEGIN
+  ALTER TABLE rewrap_jobs
+    ADD CONSTRAINT fk_rewrap_jobs_triggered_by_user
+    FOREIGN KEY (triggered_by) REFERENCES users(id) ON DELETE SET NULL;
+EXCEPTION
+  WHEN insufficient_privilege THEN
+    RAISE NOTICE 'fk_rewrap_jobs_triggered_by_user skipped: no REFERENCES on users';
+  WHEN duplicate_object THEN
+    RAISE NOTICE 'fk_rewrap_jobs_triggered_by_user already exists';
+END $$;
 
 -- RLS: rewrap_jobs sind Operator-/System-Daten — nur knowledge_admin
 -- (BYPASSRLS) sieht sie. RLS-Policy gibt es nicht; knowledge_app hat
