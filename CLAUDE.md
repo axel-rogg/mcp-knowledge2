@@ -4,6 +4,8 @@
 > Single-Tenant (1 Firma = 1 Instance), Multi-User mit Postgres-RLS.
 > Schwester-Repo: [mcp-approval2](https://github.com/axel-rogg/mcp-approval2).
 >
+> **🚀 Update 2026-05-17 spätabend — Phase-1 Group-Sharing LIVE-Deploy.** Cross-Repo-Feature komplett: Schema-Migrationen 0019 (groups + group_members + share_grants extension + RLS-Patch + RESTRICTIVE-INSERT) + 0020 (object_revisions.dek_scheme + Diamond-Index Split + FK-Constraints). AAD-Discriminated-Union v2 für per_object-DEK. KMS wrapBytes/unwrapBytes auf KmsProvider-Interface (CloudKms via GCP-Roundtrip, HKDF-Local via AES-Master, OpenBao deprecated). `src/storage/group-crypto.ts` mit 3 Wrap-Schichten (owner / member / object-via-group) + 5min Process-Cache. Lazy-Migration owner_hkdf→per_object beim ersten Share (R2-Caveat dokumentiert). readObject/updateObject Dispatch je dek_scheme (501-Throw raus). `src/storage/groups.ts` mit Member-Remove-Master-Rotation in einer TX (FOR UPDATE auf groups.id, Hard-Cap 1000 Grants). `src/storage/shares.ts` createShareWithGroup + revokeCascadeSharesFrom. `src/routes/groups.ts` mit 7 Endpoints unter /v1/groups/*. Cascade-Hook in `refs.ts:addRef` mit Subtype-Filter (`parent.subtype='skill_manifest'` + `parent.cascade_on_share=TRUE` + `role IN BUNDLE_ROLES`). Test-Coverage: 19 group-crypto Unit-Tests + 5 AAD-Domain-Separation + 15 RLS-Integration-Tests in `tests/integration/groups.test.ts`. Volle Pre-Build-Reviews (Crypto, Plan, Test) in docs/security/.
+>
 > **Status 2026-05-15:** AS-3-Code-Complete + **Generic-Object-Model** + **Vulnerabilities-Fix** + **CF Workers AI Embeddings** + **subtype_prefix Query** auf Branch `feat/as3-cutover`. Cutover-Day pending — siehe
 > [docs/runbooks/runbook-as3-cutover.md](docs/runbooks/runbook-as3-cutover.md).
 >
