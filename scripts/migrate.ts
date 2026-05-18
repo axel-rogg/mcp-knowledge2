@@ -10,8 +10,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(__dirname, '..', 'drizzle', 'migrations');
 
 async function ensureMigrationsTable(client: pg.Client) {
+  // Existenz-Check ueber pg_catalog (read-only, kein schema-CREATE-priv noetig)
+  // — Neon's connection-role kann CREATE-on-public hin und wieder verlieren
+  // (Mig 0019 entfernt es indirekt?), wodurch CREATE TABLE IF NOT EXISTS
+  // schon im if-check failen wuerde. Read-Pfad zuerst, CREATE nur wenn
+  // wirklich noetig.
+  const exists = await client.query<{ reg: string | null }>(
+    `SELECT to_regclass('public._migrations')::text AS reg`,
+  );
+  if (exists.rows[0]?.reg) return; // schon da
   await client.query(`
-    CREATE TABLE IF NOT EXISTS _migrations (
+    CREATE TABLE _migrations (
       name        TEXT PRIMARY KEY,
       applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     );
