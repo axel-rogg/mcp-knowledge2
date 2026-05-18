@@ -14,12 +14,27 @@
 // on the MCP side, but the REST side has no such metadata so we treat
 // non-safe methods as writes.
 
+import { timingSafeEqual } from 'node:crypto';
 import type { MiddlewareHandler } from 'hono';
 import { verifyServiceJwt, contextFromJwt } from './jwt.ts';
 import { verifyOnBehalfOf } from './on_behalf_of.ts';
 import { errBadRequest, errUnauthorized } from '../lib/errors.ts';
+import { loadEnv } from '../types/env.ts';
+import { uuidV4 } from '../lib/ids.ts';
+import type { RequestContext } from '../types/domain.ts';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+function constantTimeEqual(a: string, b: string): boolean {
+  const A = Buffer.from(a);
+  const B = Buffer.from(b);
+  if (A.length !== B.length) {
+    // Constant-time even on length mismatch.
+    timingSafeEqual(A, Buffer.alloc(A.length, 0));
+    return false;
+  }
+  return timingSafeEqual(A, B);
+}
 
 export const requireJwtOrOnBehalfOf: MiddlewareHandler = async (c, next) => {
   const oboHeader = c.req.header('x-on-behalf-of');
@@ -43,6 +58,28 @@ export const requireJwtOrOnBehalfOf: MiddlewareHandler = async (c, next) => {
     throw errUnauthorized('missing bearer token');
   }
   const token = auth.slice(7).trim();
+
+  // S2S-Discovery-Bypass: approval2's kc_wrappers/manifest-client fetched
+  // `tools/list` ohne User-Context (System-Admin-Call). KC2 erlaubt deshalb
+  // Bearer SERVICE_TOKEN allein als Auth, markiert das aber mit
+  // authMode='service' und scope='discovery'. Das /mcp-Dispatch enforced
+  // dann hart: unter service-mode sind nur safe RPC-Methods erlaubt
+  // (initialize / ping / tools/list / notifications). tools/call unter
+  // service-mode -> 403.
+  const env = loadEnv();
+  if (env.SERVICE_TOKEN && constantTimeEqual(token, env.SERVICE_TOKEN)) {
+    const requestId = c.req.header('x-request-id') ?? uuidV4();
+    const ctx: RequestContext = {
+      userId: null,
+      requestId,
+      authMode: 'service',
+      scopes: ['discovery'],
+    };
+    c.set('ctx', ctx);
+    await next();
+    return;
+  }
+
   const claims = await verifyServiceJwt(token);
   c.set('ctx', contextFromJwt(claims));
   await next();

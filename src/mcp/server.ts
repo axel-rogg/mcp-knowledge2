@@ -13,6 +13,7 @@ import { logger } from '../lib/logger.ts';
 import { requireJwtOrOnBehalfOf } from '../auth/require_jwt_or_obo.ts';
 import { installContext } from '../middleware/context.ts';
 import { errBadRequest } from '../lib/errors.ts';
+import { currentContext } from '../lib/context.ts';
 import {
   JSONRPC_ERROR_CODES,
   MCP_PROTOCOL_VERSION,
@@ -30,9 +31,31 @@ import { acceptHeaderOk, handleRpcBody, ok, rpcErr } from './transport.ts';
 
 const SERVER_INFO = { name: 'mcp-knowledge2', version: '0.1.0' };
 
+// Methods allowed under authMode='service' (S2S-Discovery via Bearer
+// SERVICE_TOKEN — siehe auth/require_jwt_or_obo.ts). tools/call ist
+// explizit ausgeschlossen: alle write/read-Tool-Aufrufe brauchen einen
+// User-Context (JWT oder OBO).
+const SERVICE_MODE_ALLOWED_METHODS = new Set([
+  'initialize',
+  'initialized',
+  'notifications/initialized',
+  'notifications/cancelled',
+  'ping',
+  'tools/list',
+]);
+
 async function dispatch(req: JsonRpcRequest): Promise<JsonRpcResponse | null> {
   const id = req.id ?? null;
   const isNotification = req.id === undefined;
+  // Service-Mode-Enforcement: bearer-SERVICE_TOKEN-Caller dürfen NUR Discovery.
+  const ctx = currentContext();
+  if (ctx?.authMode === 'service' && !SERVICE_MODE_ALLOWED_METHODS.has(req.method)) {
+    return rpcErr(
+      id,
+      JSONRPC_ERROR_CODES.METHOD_NOT_FOUND,
+      `method '${req.method}' not allowed under service-token auth (use OBO or user JWT)`,
+    );
+  }
   try {
     switch (req.method) {
       case 'initialize': {
