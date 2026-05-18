@@ -765,4 +765,38 @@ describe('RLS: Group-Sharing Edge-Cases', () => {
     await appClient.query('COMMIT');
     expect(upd.rowCount).toBe(0);
   });
+
+  it('(p3a-1) listSharesForGroup: Member sieht Group-Shares; Non-Member leere Liste', async () => {
+    // P3a-1: RLS-Verifikation fuer den neuen Endpoint /v1/groups/:id/shares.
+    // Member darf die share_grants der Group sehen (via grants_self-Policy).
+    // Non-Member sieht 0 Rows (silent, kein 403 — Existenz-Schutz).
+    const groupId = await seedGroup(USER_OWNER);
+    await addGroupMember(groupId, USER_MEMBER_1);
+    const objA = await seedObject(USER_OWNER, { title: 'shared-A', dekScheme: 'per_object' });
+    const objB = await seedObject(USER_OWNER, { title: 'shared-B', dekScheme: 'per_object' });
+    await shareWithGroup({ resourceId: objA, groupId, grantedBy: USER_OWNER });
+    await shareWithGroup({ resourceId: objB, groupId, grantedBy: USER_OWNER });
+
+    // Member-1 sieht beide Grants
+    await appClient.query('BEGIN');
+    await appClient.query(`SELECT set_config('app.current_user', $1, true)`, [USER_MEMBER_1]);
+    const memberGrants = await appClient.query<{ id: string; resource_id: string }>(
+      `SELECT id, resource_id FROM share_grants
+        WHERE granted_to_group_id = $1 AND revoked_at IS NULL`,
+      [groupId],
+    );
+    await appClient.query('COMMIT');
+    expect(memberGrants.rows.length).toBe(2);
+
+    // Non-Member sieht 0 Rows (RLS filtert silent)
+    await appClient.query('BEGIN');
+    await appClient.query(`SELECT set_config('app.current_user', $1, true)`, [USER_NON_MEMBER]);
+    const nonMemberGrants = await appClient.query<{ id: string }>(
+      `SELECT id FROM share_grants
+        WHERE granted_to_group_id = $1 AND revoked_at IS NULL`,
+      [groupId],
+    );
+    await appClient.query('COMMIT');
+    expect(nonMemberGrants.rows.length).toBe(0);
+  });
 });

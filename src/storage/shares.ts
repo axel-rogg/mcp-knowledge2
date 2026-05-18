@@ -98,6 +98,32 @@ export async function listSharesForObject(resourceId: string): Promise<ShareView
   });
 }
 
+/**
+ * P3a: liste alle aktiven Group-Grants an eine Group.
+ *
+ * RLS-Verhalten: `grants_self`-Policy (Mig 0019/0022) erlaubt Caller die
+ * Zeile zu lesen wenn er Member dieser Group ist (oder grantedBy/grantedTo
+ * matchet). Non-Member sehen leere Liste (kein 403, keine Existenz-Auskunft).
+ *
+ * Filter: revoked_at IS NULL (nur aktive Shares).
+ */
+export async function listSharesForGroup(groupId: string): Promise<ShareView[]> {
+  const ctx = requireContext();
+  if (!ctx.userId) throw errBadRequest('user context required');
+  return await withUserTx(ctx.userId, ctx.requestId, async (db) => {
+    const rows = await db
+      .select()
+      .from(shareGrants)
+      .where(
+        and(
+          eq(shareGrants.grantedToGroupId, groupId),
+          isNull(shareGrants.revokedAt),
+        ),
+      );
+    return rows.map(shareToView);
+  });
+}
+
 export async function revokeShare(shareId: string): Promise<void> {
   const ctx = requireContext();
   if (!ctx.userId) throw errBadRequest('user context required');

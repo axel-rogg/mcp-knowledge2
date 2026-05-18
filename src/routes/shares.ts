@@ -4,6 +4,7 @@ import {
   createShare,
   createShareWithGroup,
   listSharedWithMe,
+  listSharesForGroup,
   listSharesForObject,
   revokeShare,
 } from '../storage/shares.ts';
@@ -60,6 +61,14 @@ export const sharesRouter = new Hono()
   })
   .get('/shared-with-me', async (c) => {
     const shares = await listSharedWithMe();
+    return c.json({ items: shares });
+  })
+
+  // P3a: list all active group-grants for a group (Caller muss Member sein,
+  // RLS-Policy `grants_self` enforced das. Non-Member → leere Liste).
+  .get('/groups/:id/shares', async (c) => {
+    const groupId = c.req.param('id');
+    const shares = await listSharesForGroup(groupId);
     return c.json({ items: shares });
   })
 
