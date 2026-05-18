@@ -1,0 +1,103 @@
+name: rewrap-tick
+
+# P2-7: alle 2 Minuten triggern der Re-Wrap-Worker fuer Async-Member-Remove
+# bei Groups mit >1000 share_grants. Im Family-Mode (Groups <50) wird das
+# nie triggern — der Cron laeuft idle. Trotzdem aktiv damit die Pipeline
+# beim ersten echten Use-Case nicht fehlt.
+#
+# Service-Token: GH-Secret `SERVICE_TOKEN_OPS` (oder Fallback `SERVICE_TOKEN`
+# wenn nicht gesetzt). Doppler-Sync legt das bei deploy/fly/sync-secrets.sh.
+#
+# Failure-Behavior: bei non-2xx oeffnet die Action ein GH-Issue mit
+# label=rewrap-failure damit der Operator es sieht.
+
+on:
+  schedule:
+    # */2 = alle 2 Minuten. GitHub schedules sind "best-effort" und koennen
+    # bis zu 15 min Latenz haben — fuer einen async-rewrap-worker ist das
+    # akzeptabel, weil die Member-Remove-Operation selbst die Master-
+    # Rotation in der TX-1 schon erledigt; nur das Re-Wrap der share_grants
+    # ist async.
+    - cron: '*/2 * * * *'
+  workflow_dispatch:
+    inputs:
+      max_jobs:
+        description: 'Max jobs per tick'
+        type: string
+        default: '5'
+      batch_size:
+        description: 'Grants per batch'
+        type: string
+        default: '100'
+
+concurrency:
+  group: rewrap-tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Tick
+        env:
+          KC2_URL: https://mcp-knowledge2.fly.dev
+          SERVICE_TOKEN_OPS: ${{ secrets.SERVICE_TOKEN_OPS }}
+          SERVICE_TOKEN: ${{ secrets.SERVICE_TOKEN }}
+          MAX_JOBS: ${{ inputs.max_jobs || '5' }}
+          BATCH_SIZE: ${{ inputs.batch_size || '100' }}
+        run: |
+          set -u
+          TOKEN="${SERVICE_TOKEN_OPS:-${SERVICE_TOKEN:-}}"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Neither SERVICE_TOKEN_OPS nor SERVICE_TOKEN secret is set"
+            exit 1
+          fi
+
+          URL="${KC2_URL}/v1/internal/rewrap-tick?max_jobs=${MAX_JOBS}&batch_size=${BATCH_SIZE}"
+          RESPONSE_FILE=$(mktemp)
+          HTTP_CODE=$(curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' \
+            -X POST \
+            -H "authorization: Bearer ${TOKEN}" \
+            -H 'content-type: application/json' \
+            -d '{}' \
+            "$URL" || echo "000")
+
+          echo "HTTP $HTTP_CODE"
+          cat "$RESPONSE_FILE"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::rewrap-tick non-2xx response"
+            exit 1
+          fi
+
+          PICKED=$(jq -r '.picked // 0' < "$RESPONSE_FILE")
+          PROCESSED=$(jq -r '.processed_grants // 0' < "$RESPONSE_FILE")
+          COMPLETED=$(jq -r '.completed_jobs // 0' < "$RESPONSE_FILE")
+          ERRORS=$(jq -r '.errors | length' < "$RESPONSE_FILE")
+
+          echo "::notice::picked=${PICKED} processed=${PROCESSED} completed=${COMPLETED} errors=${ERRORS}"
+
+          if [ "$ERRORS" != "0" ]; then
+            echo "::warning::rewrap-tick reported ${ERRORS} job-level errors"
+            jq '.errors' < "$RESPONSE_FILE"
+          fi
+
+      - name: Notify on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `rewrap-tick failed at ${new Date().toISOString()}`;
+            const body = `The rewrap-tick cron job failed. Check workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\nLikely causes:\n- KC2 is down\n- SERVICE_TOKEN_OPS expired / rotated\n- Migration 0026 (rewrap_jobs) not applied (Phase 2 deploy still pending — see docs/runbooks/runbook-neon-role-grants.md)`;
+            // Avoid issue spam: only open if no open rewrap-failure issue exists.
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'rewrap-failure',
+            });
+            if (existing.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['rewrap-failure'],
+              });
+            }
