@@ -605,4 +605,94 @@ describe('RLS: Group-Sharing Edge-Cases', () => {
     const objectsVisible = await selectObjectsAs(USER_MEMBER_1);
     expect(objectsVisible.find((o) => o.id === objectInY)).toBeUndefined();
   });
+
+  it('(p2-3-a) Group-Write: aktives Member darf Object updaten via group-grant scope=write', async () => {
+    // Mig 0024: owner_or_writer_modify-Policy laesst group-write durch.
+    const objectId = await seedObject(USER_OWNER, {
+      title: 'co-edit-target',
+      dekScheme: 'per_object',
+    });
+    const groupId = await seedGroup(USER_OWNER);
+    await addGroupMember(groupId, USER_MEMBER_1);
+    await shareWithGroup({
+      resourceId: objectId,
+      groupId,
+      grantedBy: USER_OWNER,
+      scope: 'write',
+    });
+
+    // member-1 ist aktiv → UPDATE darf durch
+    await appClient.query('BEGIN');
+    await appClient.query(`SELECT set_config('app.current_user', $1, true)`, [USER_MEMBER_1]);
+    const upd = await appClient.query(
+      `UPDATE objects SET title = $1 WHERE id = $2 RETURNING id`,
+      ['co-edited', objectId],
+    );
+    await appClient.query('COMMIT');
+    expect(upd.rowCount).toBe(1);
+
+    // verify via admin
+    const r = await adminClient.query<{ title: string | null }>(
+      `SELECT title FROM objects WHERE id = $1`,
+      [objectId],
+    );
+    expect(r.rows[0]?.title).toBe('co-edited');
+  });
+
+  it('(p2-3-b) Group-Write: read-only Grant blockiert UPDATE', async () => {
+    const objectId = await seedObject(USER_OWNER, {
+      title: 'read-only-target',
+      dekScheme: 'per_object',
+    });
+    const groupId = await seedGroup(USER_OWNER);
+    await addGroupMember(groupId, USER_MEMBER_1);
+    await shareWithGroup({
+      resourceId: objectId,
+      groupId,
+      grantedBy: USER_OWNER,
+      scope: 'read',
+    });
+
+    // member-1 versucht UPDATE — RLS verweigert (0 rows affected, kein Error)
+    await appClient.query('BEGIN');
+    await appClient.query(`SELECT set_config('app.current_user', $1, true)`, [USER_MEMBER_1]);
+    const upd = await appClient.query(
+      `UPDATE objects SET title = $1 WHERE id = $2 RETURNING id`,
+      ['attempt-edit', objectId],
+    );
+    await appClient.query('COMMIT');
+    expect(upd.rowCount).toBe(0);
+
+    // Object-Title bleibt unveraendert
+    const r = await adminClient.query<{ title: string | null }>(
+      `SELECT title FROM objects WHERE id = $1`,
+      [objectId],
+    );
+    expect(r.rows[0]?.title).toBe('read-only-target');
+  });
+
+  it('(p2-3-c) Group-Write: non-Member sieht write-grant nicht (auch nicht write)', async () => {
+    const objectId = await seedObject(USER_OWNER, {
+      title: 'non-member-blocked',
+      dekScheme: 'per_object',
+    });
+    const groupId = await seedGroup(USER_OWNER);
+    // USER_NON_MEMBER ist NICHT in der Group
+    await shareWithGroup({
+      resourceId: objectId,
+      groupId,
+      grantedBy: USER_OWNER,
+      scope: 'write',
+    });
+
+    // Non-Member kann nicht updaten + nicht mal lesen
+    await appClient.query('BEGIN');
+    await appClient.query(`SELECT set_config('app.current_user', $1, true)`, [USER_NON_MEMBER]);
+    const upd = await appClient.query(
+      `UPDATE objects SET title = $1 WHERE id = $2 RETURNING id`,
+      ['attempt-edit', objectId],
+    );
+    await appClient.query('COMMIT');
+    expect(upd.rowCount).toBe(0);
+  });
 });

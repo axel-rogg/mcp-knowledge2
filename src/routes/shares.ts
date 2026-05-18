@@ -15,10 +15,10 @@ const CreateShareBody = z.object({
   expires_at: z.number().int().nullable().optional(),
 });
 
-// Phase 1 Group-Share-Body
+// Phase 2-3 Group-Share-Body (write seit Mig 0024 enabled)
 const CreateShareWithGroupBody = z.object({
   group_id: z.string().uuid(),
-  scope: z.enum(['read']), // Phase 1: nur read (write kommt mit Phase 2)
+  scope: z.enum(['read', 'write']),
   expires_at: z.number().int().nullable().optional(),
 });
 
