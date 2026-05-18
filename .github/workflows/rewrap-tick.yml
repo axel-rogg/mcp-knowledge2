@@ -5,27 +5,24 @@ name: rewrap-tick
 # nie triggern — der Cron laeuft idle. Trotzdem aktiv damit die Pipeline
 # beim ersten echten Use-Case nicht fehlt.
 #
-# Service-Token: GH-Secret `SERVICE_TOKEN_OPS` (oder Fallback `SERVICE_TOKEN`
-# wenn nicht gesetzt). Doppler-Sync legt das bei deploy/fly/sync-secrets.sh.
+# Architektur: KC2 ist post-Lockdown 2026-05-17 internal-only (Flycast).
+# GH-Actions postet daher an approval2 (public via mcp2.ai-toolhub.org),
+# approval2 proxied via Flycast an KC2 /v1/internal/rewrap-tick.
 #
-# ⚠️ KNOWN-ISSUE 2026-05-18: KC2 ist post-Lockdown internal-only (Flycast).
-# Public-URL mcp-knowledge2.fly.dev wurde abgeschaltet (fly.toml:force_https=
-# false). GH-Actions kann den endpoint nicht direkt erreichen. Solange
-# kein approval2-proxy-route existiert oder ein self-hosted runner im Fly-
-# Network steht: schedule auto-Disabled. workflow_dispatch funktioniert
-# nur wenn KC2-Public-Path manuell wieder aktiviert wird.
-#
-# Family-Mode-Impact: ZERO. Cron tickt sowieso nie weil kein Group >1000
-# Grants existiert.
+# Service-Token: GH-Secret `SERVICE_TOKEN_OPS` (oder Fallback `SERVICE_TOKEN`).
+# Beides muss approval2-side gegen MCP_KNOWLEDGE_SERVICE_TOKEN matchen.
 #
 # Failure-Behavior: bei non-2xx oeffnet die Action ein GH-Issue mit
 # label=rewrap-failure damit der Operator es sieht.
 
 on:
-  # schedule: disabled — KC2 internal-only post 2026-05-17-Lockdown.
-  # Re-enable wenn approval2-proxy-route gebaut ist oder KC2-Public wieder live.
-  # schedule:
-  #   - cron: '*/2 * * * *'
+  schedule:
+    # */2 = alle 2 Minuten. GitHub schedules sind "best-effort" und koennen
+    # bis zu 15 min Latenz haben — fuer einen async-rewrap-worker ist das
+    # akzeptabel, weil die Member-Remove-Operation selbst die Master-
+    # Rotation in der TX-1 schon erledigt; nur das Re-Wrap der share_grants
+    # ist async.
+    - cron: '*/2 * * * *'
   workflow_dispatch:
     inputs:
       max_jobs:
@@ -41,6 +38,10 @@ concurrency:
   group: rewrap-tick
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   tick:
     runs-on: ubuntu-latest
@@ -48,7 +49,7 @@ jobs:
     steps:
       - name: Tick
         env:
-          KC2_URL: https://mcp-knowledge2.fly.dev
+          APPROVAL2_URL: https://mcp2.ai-toolhub.org
           SERVICE_TOKEN_OPS: ${{ secrets.SERVICE_TOKEN_OPS }}
           SERVICE_TOKEN: ${{ secrets.SERVICE_TOKEN }}
           MAX_JOBS: ${{ inputs.max_jobs || '5' }}
@@ -61,7 +62,8 @@ jobs:
             exit 1
           fi
 
-          URL="${KC2_URL}/v1/internal/rewrap-tick?max_jobs=${MAX_JOBS}&batch_size=${BATCH_SIZE}"
+          # approval2-Proxy: /internal/v1/rewrap-tick → KC2 via Flycast
+          URL="${APPROVAL2_URL}/internal/v1/rewrap-tick?max_jobs=${MAX_JOBS}&batch_size=${BATCH_SIZE}"
           RESPONSE_FILE=$(mktemp)
           HTTP_CODE=$(curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' \
             -X POST \
@@ -96,7 +98,7 @@ jobs:
         with:
           script: |
             const title = `rewrap-tick failed at ${new Date().toISOString()}`;
-            const body = `The rewrap-tick cron job failed. Check workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\nLikely causes:\n- KC2 is down\n- SERVICE_TOKEN_OPS expired / rotated\n- Migration 0026 (rewrap_jobs) not applied (Phase 2 deploy still pending — see docs/runbooks/runbook-neon-role-grants.md)`;
+            const body = `The rewrap-tick cron job failed. Check workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\nLikely causes:\n- approval2 is down (mcp2.ai-toolhub.org/health)\n- SERVICE_TOKEN_OPS expired / rotated\n- approval2 cannot reach KC2 via Flycast (check MCP_KNOWLEDGE_URL in approval2-Doppler)\n- KC2 Migration 0026 (rewrap_jobs) not applied`;
             // Avoid issue spam: only open if no open rewrap-failure issue exists.
             const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner, repo: context.repo.repo,
