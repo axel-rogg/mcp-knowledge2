@@ -76,4 +76,56 @@ export class HkdfLocalKms implements KmsProvider {
     const derived = await hkdfAsync('sha256', this.masterKey, salt, EMBED_SALT_INFO, EMBED_SALT_BYTES);
     return Buffer.from(derived as ArrayBuffer).toString('hex');
   }
+
+  /**
+   * Phase 1 sharing: wrap arbitrary bytes via AES-256-GCM mit Master-Key.
+   * Symmetric, lokal — kein GCP-KMS-Roundtrip. Format:
+   *   [12B nonce] [ciphertext + 16B tag]
+   * AAD ist fixed 'kms-wrap-bytes-v1' für Domain-Separation gegen andere
+   * AES-GCM-Slots im Repo.
+   */
+  async wrapBytes(plaintext: Uint8Array): Promise<Uint8Array> {
+    const { webcrypto } = await import('node:crypto');
+    const key = await webcrypto.subtle.importKey(
+      'raw',
+      this.masterKey,
+      { name: 'AES-GCM' },
+      false,
+      ['encrypt'],
+    );
+    const nonce = webcrypto.getRandomValues(new Uint8Array(12));
+    const aad = new TextEncoder().encode('kms-wrap-bytes-v1');
+    const ct = await webcrypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: nonce, additionalData: aad, tagLength: 128 },
+      key,
+      plaintext,
+    );
+    const out = new Uint8Array(12 + ct.byteLength);
+    out.set(nonce, 0);
+    out.set(new Uint8Array(ct), 12);
+    return out;
+  }
+
+  async unwrapBytes(ciphertext: Uint8Array): Promise<Uint8Array> {
+    if (ciphertext.length < 12 + 16) {
+      throw errInternal('unwrapBytes: ciphertext too short');
+    }
+    const { webcrypto } = await import('node:crypto');
+    const key = await webcrypto.subtle.importKey(
+      'raw',
+      this.masterKey,
+      { name: 'AES-GCM' },
+      false,
+      ['decrypt'],
+    );
+    const nonce = ciphertext.subarray(0, 12);
+    const ct = ciphertext.subarray(12);
+    const aad = new TextEncoder().encode('kms-wrap-bytes-v1');
+    const pt = await webcrypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: nonce, additionalData: aad, tagLength: 128 },
+      key,
+      ct,
+    );
+    return new Uint8Array(pt);
+  }
 }

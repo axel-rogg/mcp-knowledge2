@@ -28,4 +28,27 @@ export interface KmsProvider {
    * @returns Hex-encoded String (32 chars für 16 random bytes)
    */
   resolveEmbedSalt(userId: string, requestId: string): Promise<string>;
+
+  /**
+   * Phase 1 sharing (PLAN-sharing-group-phase-1 §2): wrap arbitrary 32-byte
+   * key plaintext für persistente DB-Speicherung. Wird für `groups.wrapped_
+   * master_dek` genutzt — der Group-Master-Plaintext wird so weggeschlossen
+   * dass nur ein KMS-Decrypt (oder lokaler Master) ihn wieder aufschließt.
+   *
+   * Cloud-KMS-Backend: roundtrip zu GCP-KMS.encrypt (Audit-Log generiert).
+   * HKDF-Local + OpenBao: AES-256-GCM mit Master + fester AAD.
+   *
+   * @param plaintext - typically 32-byte Group-Master-DEK
+   * @returns Provider-spezifischer ciphertext (opaque, deserialisierbar nur
+   *          mit gleichem Provider)
+   */
+  wrapBytes(plaintext: Uint8Array): Promise<Uint8Array>;
+
+  /**
+   * Phase 1 sharing inverse von wrapBytes.
+   *
+   * @param ciphertext - aus wrapBytes
+   * @returns plaintext (typically 32 bytes)
+   */
+  unwrapBytes(ciphertext: Uint8Array): Promise<Uint8Array>;
 }

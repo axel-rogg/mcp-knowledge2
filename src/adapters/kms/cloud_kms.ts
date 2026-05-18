@@ -165,6 +165,45 @@ export class CloudKmsKms implements KmsProvider {
     const derived = await hkdfAsync('sha256', master, salt, EMBED_SALT_INFO, EMBED_SALT_BYTES);
     return Buffer.from(derived as ArrayBuffer).toString('hex');
   }
+
+  /**
+   * Phase 1 sharing: wrap arbitrary bytes via GCP-KMS.encrypt.
+   * Genutzt für Group-Master-DEK-Speicherung (`groups.wrapped_master_dek`).
+   * GCP-KMS-Audit-Log generiert pro wrap-Call — Compliance-positiv.
+   */
+  async wrapBytes(plaintext: Uint8Array): Promise<Uint8Array> {
+    const env = loadEnv();
+    if (!env.CLOUD_KMS_KEY_NAME) {
+      throw errInternal('wrapBytes requires CLOUD_KMS_KEY_NAME');
+    }
+    const [resp] = await kmsClient().encrypt({
+      name: env.CLOUD_KMS_KEY_NAME,
+      plaintext: Buffer.from(plaintext),
+    });
+    if (!resp.ciphertext) {
+      throw errInternal('Cloud KMS encrypt returned empty ciphertext');
+    }
+    return Buffer.isBuffer(resp.ciphertext)
+      ? new Uint8Array(resp.ciphertext)
+      : new Uint8Array(resp.ciphertext as Uint8Array);
+  }
+
+  async unwrapBytes(ciphertext: Uint8Array): Promise<Uint8Array> {
+    const env = loadEnv();
+    if (!env.CLOUD_KMS_KEY_NAME) {
+      throw errInternal('unwrapBytes requires CLOUD_KMS_KEY_NAME');
+    }
+    const [resp] = await kmsClient().decrypt({
+      name: env.CLOUD_KMS_KEY_NAME,
+      ciphertext: Buffer.from(ciphertext),
+    });
+    if (!resp.plaintext) {
+      throw errInternal('Cloud KMS decrypt returned empty plaintext');
+    }
+    return Buffer.isBuffer(resp.plaintext)
+      ? new Uint8Array(resp.plaintext)
+      : new Uint8Array(resp.plaintext as Uint8Array);
+  }
 }
 
 /**

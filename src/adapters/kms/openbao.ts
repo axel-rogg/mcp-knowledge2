@@ -70,4 +70,21 @@ export class OpenBaoKms implements KmsProvider {
         'Cloud-KMS ist Default seit ADR-0011)',
     );
   }
+
+  async wrapBytes(_plaintext: Uint8Array): Promise<Uint8Array> {
+    // Phase 1 sharing nutzt Group-Master-Storage. OpenBao-Pfad ist seit
+    // ADR-0011 deprecated; wenn jemand OpenBao reaktiviert + Group-Sharing
+    // braucht: hier Transit `encrypt/<key>`-Roundtrip implementieren.
+    throw errServiceUnavailable(
+      'OpenBao-KMS hat wrapBytes nicht implementiert (Pfad deprecated, ' +
+        'Cloud-KMS ist Default seit ADR-0011)',
+    );
+  }
+
+  async unwrapBytes(_ciphertext: Uint8Array): Promise<Uint8Array> {
+    throw errServiceUnavailable(
+      'OpenBao-KMS hat unwrapBytes nicht implementiert (Pfad deprecated, ' +
+        'Cloud-KMS ist Default seit ADR-0011)',
+    );
+  }
 }

@@ -116,6 +116,15 @@ beforeAll(async () => {
   setKmsForTest({
     resolveUserDek: async () => new Uint8Array(32), // all-zero key — fine for AES-GCM
     resolveEmbedSalt: async () => '00000000000000000000000000000000', // 16 bytes hex
+    // Phase 1 sharing: wrap/unwrap mit AES-GCM + fixed master (Test-Stub)
+    wrapBytes: async (p) => {
+      const out = new Uint8Array(p.length + 12 + 16);
+      out.set(new Uint8Array(12), 0); // zero-nonce ok für Test
+      out.set(p, 12);
+      // pseudo-tag (16 zero bytes) — Stub-Mock, kein echtes GCM hier
+      return out;
+    },
+    unwrapBytes: async (ct) => ct.subarray(12, ct.length - 16),
   });
 
   const { setEmbeddingAdapterForTest } = await import('../../src/adapters/embed/index.ts');
