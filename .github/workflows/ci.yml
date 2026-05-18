@@ -12,15 +12,29 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - 'LICENSE'
+      - 'deploy/**'           # Fly/GCP Deploy-Configs, kein Code-Build-Impact
+      - '.claude/**'
+      - '.vscode/**'
+      - '.editorconfig'
       - '.gitignore'
+      - '.dockerignore'
+      - '.env.example'
+      - 'LICENSE'
+      # NICHT ignoriert: scripts/** (tsconfig.json include scripts/**/*.ts),
+      # deployments/** (SQL-Init + Compose, load-bearing).
   pull_request:
     branches: [main]
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - 'LICENSE'
+      - 'deploy/**'
+      - '.claude/**'
+      - '.vscode/**'
+      - '.editorconfig'
       - '.gitignore'
+      - '.dockerignore'
+      - '.env.example'
+      - 'LICENSE'
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
