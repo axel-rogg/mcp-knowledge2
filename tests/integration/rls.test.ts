@@ -48,6 +48,16 @@ beforeAll(async () => {
     const sql = await readFile(join(migrationsDir, file), 'utf8');
     await rootClient.query(sql);
   }
+  // Test-User in users-Tabelle inserten — Migration 0020 fuegt FK-Constraints
+  // auf share_grants.granted_by/granted_to → users(id). Ohne diese Rows
+  // fail't INSERT share_grants (granted_by, granted_to) mit FK-Violation.
+  for (const id of [USER_A, USER_B, '33333333-3333-3333-3333-333333333333']) {
+    await rootClient.query(
+      `INSERT INTO users (id, external_id, email, status, created_at, updated_at)
+       VALUES ($1, $1, $1 || '@test.org', 'active', 0, 0) ON CONFLICT DO NOTHING`,
+      [id],
+    );
+  }
   await rootClient.end();
 
   const host = container.getHost();
