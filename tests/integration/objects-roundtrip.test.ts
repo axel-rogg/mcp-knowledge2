@@ -108,7 +108,7 @@ beforeAll(async () => {
   for (const uid of [USER_A, USER_B]) {
     await rootClient.query(
       `INSERT INTO users (id, email, status, created_at)
-       VALUES ($1, $1 || '@test.org', 'active', 0)
+       VALUES ($1::uuid, $1::text || '@test.org', 'active', 0)
        ON CONFLICT (id) DO NOTHING`,
       [uid],
     );

@@ -71,7 +71,7 @@ beforeAll(async () => {
   ]) {
     await rootClient.query(
       `INSERT INTO users (id, email, status, created_at)
-       VALUES ($1, $1 || '@test.org', 'active', 0) ON CONFLICT DO NOTHING`,
+       VALUES ($1::uuid, $1::text || '@test.org', 'active', 0) ON CONFLICT DO NOTHING`,
       [id],
     );
   }
