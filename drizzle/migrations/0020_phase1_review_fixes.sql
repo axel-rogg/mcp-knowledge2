@@ -88,9 +88,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_share_grants_group_cascade_unique
 --   3. ODER Group delete (CASCADE auf group_members + share_grants)
 -- Erst dann darf User-Delete laufen.
 
-ALTER TABLE groups
-  ADD CONSTRAINT fk_groups_owner_user
-  FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE RESTRICT;
+-- Wrap FK-Creation in DO-Block: Neon-Quirk laesst non-owner-role das ALTER
+-- nicht durch, selbst wenn die Role implicit privs haette. Falls users von
+-- einer anderen Role owned wird als der Migration-Runner: silent skip mit
+-- NOTICE, Operator kann den FK via DATABASE_ADMIN_URL nachgeben.
+DO $$ BEGIN
+  ALTER TABLE groups
+    ADD CONSTRAINT fk_groups_owner_user
+    FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE RESTRICT;
+EXCEPTION
+  WHEN insufficient_privilege THEN
+    RAISE NOTICE 'fk_groups_owner_user skipped: no REFERENCES on users (operator-bootstrap may add it)';
+  WHEN duplicate_object THEN
+    RAISE NOTICE 'fk_groups_owner_user already exists';
+END $$;
 
 -- ──────────────────────────────────────────────────────────────────────────
 -- 4. group_members.user_id FK zu users(id) — Cascade auf User-Delete
@@ -106,9 +117,16 @@ ALTER TABLE groups
 -- bleibende Members re-wrappen) muss BEFORE diesen FK-Cascade laufen.
 -- Bei GDPR-Erase wird das im hardDeleteByOwner-Flow aufgerufen.
 
-ALTER TABLE group_members
-  ADD CONSTRAINT fk_group_members_user
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE group_members
+    ADD CONSTRAINT fk_group_members_user
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+EXCEPTION
+  WHEN insufficient_privilege THEN
+    RAISE NOTICE 'fk_group_members_user skipped: no REFERENCES on users';
+  WHEN duplicate_object THEN
+    RAISE NOTICE 'fk_group_members_user already exists';
+END $$;
 
 -- ──────────────────────────────────────────────────────────────────────────
 -- 5. share_grants.granted_to + .granted_by FK zu users(id) — Konsistenz
@@ -124,9 +142,16 @@ ALTER TABLE group_members
 
 -- granted_to: Recipient. Auto-Revoke wenn User weg.
 -- (NULL erlaubt fuer Group-Grants — FK ist NULL-tolerant)
-ALTER TABLE share_grants
-  ADD CONSTRAINT fk_share_grants_granted_to_user
-  FOREIGN KEY (granted_to) REFERENCES users(id) ON DELETE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE share_grants
+    ADD CONSTRAINT fk_share_grants_granted_to_user
+    FOREIGN KEY (granted_to) REFERENCES users(id) ON DELETE CASCADE;
+EXCEPTION
+  WHEN insufficient_privilege THEN
+    RAISE NOTICE 'fk_share_grants_granted_to_user skipped: no REFERENCES on users';
+  WHEN duplicate_object THEN
+    RAISE NOTICE 'fk_share_grants_granted_to_user already exists';
+END $$;
 
 -- granted_by: Grantor (immer der Resource-Owner). Sollte gleichzeitig
 -- mit Resource-Erase verschwinden, nicht durch share_grants blockiert.
@@ -134,6 +159,13 @@ ALTER TABLE share_grants
 -- aber Plan-Review schlaegt RESTRICT vor damit Erase-Sequence explizit
 -- audit-trail erzeugt. Wir nehmen CASCADE — der App-Layer-hardDeleteByOwner
 -- macht eigenes Audit + ordert die DELETEs sauber.
-ALTER TABLE share_grants
-  ADD CONSTRAINT fk_share_grants_granted_by_user
-  FOREIGN KEY (granted_by) REFERENCES users(id) ON DELETE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE share_grants
+    ADD CONSTRAINT fk_share_grants_granted_by_user
+    FOREIGN KEY (granted_by) REFERENCES users(id) ON DELETE CASCADE;
+EXCEPTION
+  WHEN insufficient_privilege THEN
+    RAISE NOTICE 'fk_share_grants_granted_by_user skipped: no REFERENCES on users';
+  WHEN duplicate_object THEN
+    RAISE NOTICE 'fk_share_grants_granted_by_user already exists';
+END $$;
