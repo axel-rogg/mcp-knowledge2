@@ -399,18 +399,21 @@ describe('RLS: Group-Sharing Phase 1', () => {
     expect(asStranger.map((g) => g.id)).not.toContain(groupOwned);
   });
 
-  it('(i) group_members-Tabelle: Phase-1 — Member sieht eigene Row, Owner sieht alle', async () => {
-    // Phase-1-Decision (Mig 0021 RLS-Recursion-Fix): Cross-Member-Visibility
-    // ist Phase-2-Feature via SECURITY DEFINER helper. Phase 1: User sieht
-    // eigene Membership + (wenn Owner) alle Members seiner Groups.
+  it('(i) group_members-Tabelle: Phase-2-2 — aktive Member sehen alle aktiven Member', async () => {
+    // P2-2-Decision (Mig 0023): Cross-Member-Visibility via SECURITY DEFINER
+    // helper `is_active_member_of` aus Mig 0022. Aktive Member sehen jetzt
+    // alle anderen aktiven Member desselben Group. Owner sieht alle (auch
+    // removed). Non-Member sieht nichts.
     const groupId = await seedGroup(USER_OWNER);
     await addGroupMember(groupId, USER_MEMBER_1);
     await addGroupMember(groupId, USER_MEMBER_2);
 
-    // Member-1 sieht NUR seine eigene Row
+    // Member-1 sieht alle 3 aktiven Member (Owner + member-1 + member-2)
     const asMember1 = await selectGroupMembersAs(USER_MEMBER_1, groupId);
-    expect(asMember1).toHaveLength(1);
-    expect(asMember1[0]!.user_id).toBe(USER_MEMBER_1);
+    expect(asMember1).toHaveLength(3);
+    expect(asMember1.map((m) => m.user_id).sort()).toEqual(
+      [USER_OWNER, USER_MEMBER_1, USER_MEMBER_2].sort(),
+    );
     // Owner sieht alle 3
     const asOwner = await selectGroupMembersAs(USER_OWNER, groupId);
     expect(asOwner).toHaveLength(3);
@@ -550,6 +553,36 @@ describe('RLS: Group-Sharing Edge-Cases', () => {
     // Beide Cascade-Rows existieren
     const grants = await selectShareGrantsAs(USER_OWNER, docId);
     expect(grants).toHaveLength(2);
+  });
+
+  it('(o-p2) Removed-Member sieht andere Member NICHT mehr (P2-2)', async () => {
+    // Mig 0023: is_active_member_of filtert removed_at IS NULL → wer raus
+    // ist, sieht die anderen aktiven Member nicht mehr.
+    const groupId = await seedGroup(USER_OWNER);
+    await addGroupMember(groupId, USER_MEMBER_1);
+    await addGroupMember(groupId, USER_MEMBER_2);
+
+    // Member-1 ist drin → sieht alle 3
+    const beforeRemove = await selectGroupMembersAs(USER_MEMBER_1, groupId);
+    expect(beforeRemove).toHaveLength(3);
+
+    // Member-1 wird removed
+    await adminClient.query(
+      `UPDATE group_members SET removed_at = $1 WHERE group_id = $2 AND user_id = $3`,
+      [Date.now(), groupId, USER_MEMBER_1],
+    );
+
+    // Member-1 sieht jetzt nur noch seine eigene Row (über user_id=self-Klausel)
+    const afterRemove = await selectGroupMembersAs(USER_MEMBER_1, groupId);
+    expect(afterRemove).toHaveLength(1);
+    expect(afterRemove[0]!.user_id).toBe(USER_MEMBER_1);
+
+    // Aktive Member-2 sieht weiterhin alle 3 (Owner + member-1-removed + member-2)?
+    // Nein — Member-2 sieht nur AKTIVE Member-1 ist removed, also (Owner + self).
+    // Owner aber sieht alle inkl. removed (owns_group-Helper hat keinen
+    // removed_at-Filter).
+    const asOwner = await selectGroupMembersAs(USER_OWNER, groupId);
+    expect(asOwner).toHaveLength(3); // inkl. removed-1
   });
 
   it('(o) Removed-Member-IDOR-Block: Member-of-X kann Group-Y-Grants NICHT sehen', async () => {
