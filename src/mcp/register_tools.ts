@@ -26,7 +26,6 @@ import {
   listOutgoingRefs,
   listRefsForObject,
   removeRef,
-  type RefView,
   type RefsForObject,
 } from '../storage/refs.ts';
 import {

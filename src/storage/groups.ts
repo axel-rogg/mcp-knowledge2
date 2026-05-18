@@ -88,20 +88,13 @@ export async function createGroup(input: CreateGroupInput): Promise<GroupView> {
   // 1. Group-Master generieren + KMS-wrappen (1× KMS-Roundtrip)
   const masterCreation = await generateAndWrapGroupMaster(kms());
 
-  // 2. Owner-KEK + wrap Group-Master für Owner-as-Member
+  // 2. Owner-KEK
   const ownerKek = await kms().resolveUserDek(ctx.userId, ctx.requestId);
-  const wrappedGroupDekForOwner = await wrapGroupMasterForMember(
-    masterCreation.plaintext,
-    ownerKek,
-    /* groupId placeholder */ '00000000-0000-0000-0000-000000000000',
-    /* masterVersion */ 1,
-  );
 
-  // Note: das ist ein Quirk — wir wrappen für AAD mit GroupId BEVOR wir
-  // die GroupId kennen (DB generiert via gen_random_uuid). Pragmatisch:
-  // wir generieren GroupId hier (uuidV4) + nutzen sie konsistent.
-  // → Stattdessen separater Flow: INSERT erst mit groupId=NULL? Nein,
-  //   einfacher: clientseitig groupId generieren.
+  // Note: das initiale wrappedGroupDekForOwner muss mit der echten groupId
+  // im AAD wrapped sein. Da die DB groupId via gen_random_uuid() generiert,
+  // wrappen wir erst nach dem INSERT mit der zurueckgegebenen ID (siehe
+  // unten im correctWrap-Block).
 
   return await withUserTx(ctx.userId, ctx.requestId, async (db) => {
     const inserted = await db
