@@ -53,20 +53,26 @@ async function main() {
     // (knowledge_app = DB-owner) machen, kein SET ROLE noetig.
     await ensureMigrationsTable(client);
 
-    // NACH ensureMigrationsTable: SET ROLE neon_superuser fuer die folgenden
-    // Migrationen — alte Tabellen (object_revisions etc.) wurden initial
-    // unter einer admin-aehnlichen Rolle erstellt, ALTER TABLE braucht
-    // jetzt owner-Privilegie. neon_superuser ist Gruppe; SET ROLE
-    // aktiviert die volle DDL-Power inkl. ALTER auf admin-owned tables.
-    try {
-      await client.query(`SET ROLE neon_superuser`);
-      console.warn(
-        '▸ migrate.ts: SET ROLE neon_superuser succeeded (post-_migrations, DDL active)',
-      );
-    } catch (e) {
-      console.warn(
-        `▸ migrate.ts: SET ROLE neon_superuser unavailable (${(e as Error).message}), continuing`,
-      );
+    // NACH ensureMigrationsTable: versuche SET ROLE fuer DDL-Privs. Alte
+    // Tabellen (object_revisions, users, etc.) wurden initial unter einer
+    // anderen Role erstellt — typischerweise via DATABASE_ADMIN_URL beim
+    // Bootstrap, also knowledge_admin als Owner. Wir probieren in
+    // Preference-Order: knowledge_admin → neon_superuser → fortsetzen
+    // als connecting-role.
+    const setRoleCandidates = ['knowledge_admin', 'neon_superuser'];
+    let activeRole = '<connecting>';
+    for (const candidate of setRoleCandidates) {
+      try {
+        await client.query(`SET ROLE ${candidate}`);
+        activeRole = candidate;
+        console.warn(`▸ migrate.ts: SET ROLE ${candidate} succeeded`);
+        break;
+      } catch {
+        /* try next */
+      }
+    }
+    if (activeRole === '<connecting>') {
+      console.warn('▸ migrate.ts: no SET ROLE candidate worked, using connecting role');
     }
 
     const applied = await appliedSet(client);
