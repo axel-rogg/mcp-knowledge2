@@ -399,14 +399,21 @@ describe('RLS: Group-Sharing Phase 1', () => {
     expect(asStranger.map((g) => g.id)).not.toContain(groupOwned);
   });
 
-  it('(i) group_members-Tabelle: Member sieht alle Members seiner Group', async () => {
+  it('(i) group_members-Tabelle: Phase-1 — Member sieht eigene Row, Owner sieht alle', async () => {
+    // Phase-1-Decision (Mig 0021 RLS-Recursion-Fix): Cross-Member-Visibility
+    // ist Phase-2-Feature via SECURITY DEFINER helper. Phase 1: User sieht
+    // eigene Membership + (wenn Owner) alle Members seiner Groups.
     const groupId = await seedGroup(USER_OWNER);
     await addGroupMember(groupId, USER_MEMBER_1);
     await addGroupMember(groupId, USER_MEMBER_2);
 
-    // Member-1 sieht alle 3 Members
+    // Member-1 sieht NUR seine eigene Row
     const asMember1 = await selectGroupMembersAs(USER_MEMBER_1, groupId);
-    expect(asMember1).toHaveLength(3);
+    expect(asMember1).toHaveLength(1);
+    expect(asMember1[0]!.user_id).toBe(USER_MEMBER_1);
+    // Owner sieht alle 3
+    const asOwner = await selectGroupMembersAs(USER_OWNER, groupId);
+    expect(asOwner).toHaveLength(3);
     // Non-Member sieht nichts
     const asStranger = await selectGroupMembersAs(USER_NON_MEMBER, groupId);
     expect(asStranger).toHaveLength(0);
