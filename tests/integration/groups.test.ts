@@ -70,8 +70,8 @@ beforeAll(async () => {
     USER_NON_MEMBER,
   ]) {
     await rootClient.query(
-      `INSERT INTO users (id, external_id, email, status, created_at, updated_at)
-       VALUES ($1, $1, $1 || '@test.org', 'active', 0, 0) ON CONFLICT DO NOTHING`,
+      `INSERT INTO users (id, email, status, created_at)
+       VALUES ($1, $1 || '@test.org', 'active', 0) ON CONFLICT DO NOTHING`,
       [id],
     );
   }

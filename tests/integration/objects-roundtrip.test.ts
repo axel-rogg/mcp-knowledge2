@@ -102,6 +102,18 @@ beforeAll(async () => {
     await rootClient.query(`REVOKE ALL ON blob_deletion_queue FROM knowledge_app`).catch(() => {});
   }
 
+  // Phase 1 sharing (Mig 0020): FK auf share_grants.granted_by/granted_to →
+  // users(id). Test-User in users-Tabelle inserten damit Tests die share_grants
+  // mit USER_A/USER_B-UUIDs inserten nicht mit FK-Violation failen.
+  for (const uid of [USER_A, USER_B]) {
+    await rootClient.query(
+      `INSERT INTO users (id, email, status, created_at)
+       VALUES ($1, $1 || '@test.org', 'active', 0)
+       ON CONFLICT (id) DO NOTHING`,
+      [uid],
+    );
+  }
+
   const host = container.getHost();
   const port = container.getPort();
   process.env.DATABASE_URL = `postgres://knowledge_app:app@${host}:${port}/knowledge`;
