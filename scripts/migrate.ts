@@ -53,11 +53,25 @@ async function main() {
     // (knowledge_app = DB-owner) machen, kein SET ROLE noetig.
     await ensureMigrationsTable(client);
 
-    // Verified 2026-05-18: alle public-Tabellen sind knowledge_app-owned.
-    // Kein SET ROLE noetig — als Owner haben wir implicit alle Privilegien
-    // auf eigene Tabellen (REFERENCES + ALTER + GRANT-Option).
-    // FK-Constraints in Mig 0020/0026 sind DO-Block-gewrappt mit
-    // graceful skip auf insufficient_privilege als defense-in-depth.
+    // Neon-Quirk (verified 2026-05-18): der Pooler macht beim Connect
+    // automatisch ein implicit SET ROLE neon_superuser. Damit ist
+    // `current_user` = neon_superuser, NICHT der login-role
+    // (`session_user` = knowledge_app). ALTER TABLE checked aber gegen
+    // `current_user`. Alle Tabellen sind knowledge_app-owned (pg_class
+    // confirmed) → ALTER failed mit "must be owner".
+    //
+    // Fix: RESET ROLE bringt current_user zurueck auf session_user
+    // (= knowledge_app), und damit funktionieren ALTER + Owner-implicit-
+    // REFERENCES + alle DDL-Operationen auf eigenen Tabellen.
+    try {
+      await client.query(`RESET ROLE`);
+      const r = await client.query<{ current_user: string }>(`SELECT current_user`);
+      console.warn(
+        `▸ migrate.ts: RESET ROLE — current_user = ${r.rows[0]?.current_user ?? '?'}`,
+      );
+    } catch (e) {
+      console.warn(`▸ migrate.ts: RESET ROLE failed (${(e as Error).message})`);
+    }
 
     const applied = await appliedSet(client);
     const files = (await readdir(MIGRATIONS_DIR))
