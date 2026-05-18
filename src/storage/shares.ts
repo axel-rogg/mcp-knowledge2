@@ -6,10 +6,22 @@
 // tools can layer per-subtype share policy on top if needed (caller-side).
 
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
-import { shareGrants, objects } from '../db/schema.ts';
+import { shareGrants, objects, groups, groupMembers } from '../db/schema.ts';
 import { withUserTx } from '../db/client.ts';
+import { kms } from '../adapters/kms/index.ts';
+import {
+  unwrapGroupMaster,
+  wrapPerObjectDekForGroup,
+} from './group-crypto.ts';
+import { lazyMigrateToPerObject } from './lazy-migration.ts';
 import { requireContext } from '../lib/context.ts';
-import { errBadRequest, errForbidden, errNotFound } from '../lib/errors.ts';
+import {
+  AppError,
+  errBadRequest,
+  errForbidden,
+  errInternal,
+  errNotFound,
+} from '../lib/errors.ts';
 import { nowMs } from '../lib/ids.ts';
 import type { SharePermission } from '../types/domain.ts';
 
@@ -134,6 +146,227 @@ function shareToView(r: typeof shareGrants.$inferSelect): ShareView {
     grantedAt: r.grantedAt,
     expiresAt: r.expiresAt,
     revokedAt: r.revokedAt,
+  };
+}
+
+// ─── Group-Sharing (Phase 1, Item 6b) ──────────────────────────────────────
+//
+// PLAN-Ref: docs/plans/active/PLAN-sharing-group-phase-1.md §6
+// ADR: mcp-approval2/docs/adr/0024-group-sharing-architecture.md
+//
+// Owner shared ein Object mit einer Group. Sequenz:
+//   1. Object laden + Ownership-Check
+//   2. Group laden (current-user MUSS Owner ODER aktiver Admin-Member sein)
+//   3. Lazy-Migration falls dek_scheme='owner_hkdf' (Body wird re-encrypted)
+//   4. Group-Master entpacken (via cache oder KMS-Unwrap)
+//   5. Per-Object-DEK mit Group-Master wrappen
+//   6. INSERT share_grants (RLS-RESTRICTIVE-Policy gated)
+
+export interface CreateShareWithGroupInput {
+  readonly resourceId: string;
+  readonly groupId: string;
+  readonly scope: SharePermission;
+  readonly expiresAt?: number | null;
+  /** Audit-Spur: bei Cascade-Hook gesetzt (Skill → Doc) */
+  readonly viaCascadeFromObjectId?: string | null;
+}
+
+export interface GroupShareView extends ShareView {
+  readonly grantedToGroupId: string;
+  readonly viaCascadeFromObjectId: string | null;
+  readonly groupMasterVersion: number | null;
+}
+
+export async function createShareWithGroup(
+  input: CreateShareWithGroupInput,
+): Promise<GroupShareView> {
+  const ctx = requireContext();
+  if (!ctx.userId) throw errBadRequest('user context required');
+
+  return await withUserTx(ctx.userId, ctx.requestId, async (db) => {
+    // 1. Object laden + Ownership-Check (Phase 1: nur Owner kann sharen)
+    //    SELECT FOR UPDATE als Coordinator-Lock fuer Lazy-Migration.
+    const objRows = await db
+      .select()
+      .from(objects)
+      .where(eq(objects.id, input.resourceId))
+      .for('update')
+      .limit(1);
+    const obj = objRows[0];
+    if (!obj) throw errNotFound(`object ${input.resourceId} not found or not visible`);
+    if (obj.ownerId !== ctx.userId) {
+      throw errForbidden('only owner can share');
+    }
+
+    // 2. Group laden + current-user-Membership-Check
+    const groupRows = await db
+      .select()
+      .from(groups)
+      .where(and(eq(groups.id, input.groupId), isNull(groups.archivedAt)))
+      .limit(1);
+    const group = groupRows[0];
+    if (!group) throw errNotFound(`group ${input.groupId} not found or archived`);
+
+    // 3. Lazy-Migration falls noetig (idempotent)
+    const migrationResult = await lazyMigrateToPerObject(db, obj, ctx.requestId);
+
+    // 4. Group-Master entpacken — via current-user-Membership-Row
+    //    (Owner ist initial-Admin, hat aktive Membership)
+    const memberRows = await db
+      .select()
+      .from(groupMembers)
+      .where(
+        and(
+          eq(groupMembers.groupId, input.groupId),
+          eq(groupMembers.userId, ctx.userId!),
+          isNull(groupMembers.removedAt),
+        ),
+      )
+      .limit(1);
+    const member = memberRows[0];
+    if (!member) {
+      throw errForbidden('only active group members can share into the group');
+    }
+
+    // Unwrap via member-KEK + AAD-Check
+    const { unwrapGroupMasterFromMemberRow } = await import('./group-crypto.ts');
+    const memberKek = await kms().resolveUserDek(ctx.userId!, ctx.requestId);
+    const groupMaster = await unwrapGroupMasterFromMemberRow(
+      member.wrappedGroupDek,
+      memberKek,
+      group.id,
+      member.wrappedForMasterVersion,
+    );
+
+    // Sicherheits-Check: member.wrappedForMasterVersion sollte == group.masterVersion sein.
+    // Falls stale (Member wurde noch nicht re-wrapped nach Rotation): abort.
+    if (member.wrappedForMasterVersion !== group.masterVersion) {
+      throw new AppError(
+        401,
+        'https://problems.knowledge2/stale-membership',
+        'group membership is stale (master rotated); re-login required before sharing',
+        {
+          member_version: member.wrappedForMasterVersion,
+          group_version: group.masterVersion,
+        },
+      );
+    }
+
+    // 5. Per-Object-DEK mit Group-Master wrappen
+    const wrappedObjectDek = await wrapPerObjectDekForGroup(
+      migrationResult.perObjectDek,
+      groupMaster,
+      input.resourceId,
+    );
+
+    // 6. INSERT share_grants — RLS-RESTRICTIVE 'grants_insert_group_owner_required'
+    //    sichert dass nur Group-Owner Group-Grants inserten kann.
+    //    ON CONFLICT-Handling fuer Diamond-Cascade-Safety: bei Cascade ist
+    //    'via_cascade_from_object_id' gesetzt; gleiches (resource, group,
+    //    cascade-source)-Triple gibt es nur einmal (UNIQUE-Index aus Mig 0020).
+    const inserted = await db
+      .insert(shareGrants)
+      .values({
+        resourceId: input.resourceId,
+        grantedTo: null,
+        grantedToGroupId: input.groupId,
+        grantedBy: ctx.userId!,
+        scope: input.scope,
+        grantedAt: nowMs(),
+        expiresAt: input.expiresAt ?? null,
+        viaCascadeFromObjectId: input.viaCascadeFromObjectId ?? null,
+        wrappedObjectDek,
+        groupMasterVersion: group.masterVersion,
+      })
+      .onConflictDoNothing()
+      .returning();
+
+    const share = inserted[0];
+    if (!share) {
+      // Duplikat (z.B. bei wiederholtem Cascade) — keine Error, idempotent.
+      // Wir holen die existing Row für consistent Return.
+      const existing = await db
+        .select()
+        .from(shareGrants)
+        .where(
+          and(
+            eq(shareGrants.resourceId, input.resourceId),
+            eq(shareGrants.grantedToGroupId, input.groupId),
+            isNull(shareGrants.revokedAt),
+          ),
+        )
+        .limit(1);
+      const existingShare = existing[0];
+      if (!existingShare) {
+        throw errInternal('createShareWithGroup: insert returned nothing and no existing row');
+      }
+      return groupShareToView(existingShare);
+    }
+
+    // 7. Visibility-Flag fuer UI-Hint
+    await db
+      .update(objects)
+      .set({ visibility: 'shared' })
+      .where(and(eq(objects.id, input.resourceId), eq(objects.visibility, 'private')));
+
+    // 8. Cache Group-Master fuer kuenftige Reads
+    await unwrapGroupMaster(
+      kms(),
+      group.id,
+      group.masterVersion,
+      group.wrappedMasterDek,
+    );
+
+    return groupShareToView(share);
+  });
+}
+
+/**
+ * Revoke aller share_grants die als Cascade vom parent-Object stammen.
+ * Wird gerufen von `removeObjectRef` (in refs.ts) wenn ein BUNDLE_ROLES-
+ * Ref entfernt wird.
+ *
+ * Direkte Shares (via_cascade_from IS NULL) bleiben unangetastet.
+ */
+export async function revokeCascadeSharesFrom(
+  parentObjectId: string,
+  childObjectId: string,
+): Promise<number> {
+  const ctx = requireContext();
+  if (!ctx.userId) throw errBadRequest('user context required');
+
+  return await withUserTx(ctx.userId, ctx.requestId, async (db) => {
+    const r = await db
+      .update(shareGrants)
+      .set({ revokedAt: nowMs() })
+      .where(
+        and(
+          eq(shareGrants.resourceId, childObjectId),
+          eq(shareGrants.viaCascadeFromObjectId, parentObjectId),
+          isNull(shareGrants.revokedAt),
+        ),
+      )
+      .returning({ id: shareGrants.id });
+    return r.length;
+  });
+}
+
+function groupShareToView(r: typeof shareGrants.$inferSelect): GroupShareView {
+  if (!r.grantedToGroupId) {
+    throw errInternal('groupShareToView called on non-group share');
+  }
+  return {
+    id: r.id,
+    resourceId: r.resourceId,
+    grantedTo: r.grantedTo,
+    grantedToGroupId: r.grantedToGroupId,
+    grantedBy: r.grantedBy,
+    scope: r.scope as SharePermission,
+    grantedAt: r.grantedAt,
+    expiresAt: r.expiresAt,
+    revokedAt: r.revokedAt,
+    viaCascadeFromObjectId: r.viaCascadeFromObjectId ?? null,
+    groupMasterVersion: r.groupMasterVersion,
   };
 }
 
