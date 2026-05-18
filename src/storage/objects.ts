@@ -5,15 +5,29 @@
 //         and AAD = '<recordType>|<owner_id>|<id>'  (ADR-0004).
 
 import { and, desc, eq, isNull, lt, sql } from 'drizzle-orm';
-import { objects, objectRevisions, objectVectors, type ObjectRow } from '../db/schema.ts';
+import {
+  objects,
+  objectRevisions,
+  objectVectors,
+  shareGrants,
+  groupMembers,
+  groups,
+  type ObjectRow,
+} from '../db/schema.ts';
 import { type Db, withUserTx } from '../db/client.ts';
 import { buildAad } from '../lib/crypto/aad.ts';
 import { decrypt, encrypt, importKey } from '../lib/crypto/aes_gcm.ts';
+import {
+  unwrapGroupMaster,
+  unwrapGroupMasterFromMemberRow,
+  unwrapPerObjectDekForOwner,
+  unwrapPerObjectDekFromGroup,
+} from './group-crypto.ts';
 import { uuidV4, nowMs } from '../lib/ids.ts';
 import { blobStore } from '../adapters/blob/index.ts';
 import { kms } from '../adapters/kms/index.ts';
 import { embeddingAdapter } from '../adapters/embed/index.ts';
-import { errBadRequest, errForbidden, errNotFound, AppError } from '../lib/errors.ts';
+import { errBadRequest, errForbidden, errInternal, errNotFound, AppError } from '../lib/errors.ts';
 import { requireContext } from '../lib/context.ts';
 import type { Visibility } from '../types/domain.ts';
 
@@ -343,28 +357,15 @@ export async function readObject(
       );
     }
 
-    // F-1: per-user-DEK + AAD-binding to row.ownerId means only the
-    // owner can decrypt the body. RLS already lets a shared user see
-    // the metadata row, but the body cipher is encrypted under the
-    // owner's DEK, not theirs. Be explicit instead of returning a
-    // confusing decrypt-failure stacktrace. Sharing-aware body
-    // encryption (per-object DEK + share-wrapped) is a Phase-5+ topic.
-    if (row.ownerId !== ctx.userId) {
-      throw new AppError(
-        501,
-        'https://problems.knowledge2/shared-body-not-implemented',
-        'shared body decryption is not implemented; only the owner can read the body',
-        { owner_id: row.ownerId, your_id: ctx.userId },
-      );
-    }
+    // Phase 1 sharing — Dispatch je dek_scheme (Crypto-Review §3.1).
+    // Drei Pfade:
+    //   (1) Owner-Read auf 'owner_hkdf' (legacy) → HKDF + AAD 'objects|owner|id'
+    //   (2) Owner-Read auf 'per_object'         → owner_wrapped_dek + AAD-v2
+    //   (3) Non-Owner-Read auf 'per_object'     → Group-Membership-Pfad
+    //   (4) Non-Owner-Read auf 'owner_hkdf'     → 501 (kein Lazy-Migration im Read-Pfad)
+    let body: Uint8Array;
 
-    const dek = await kms().resolveUserDek(ctx.userId!, ctx.requestId);
-    const key = await importKey(dek);
-    const aad = buildAad({
-      recordType: 'objects',
-      ownerId: row.ownerId,
-      objectId: row.id,
-    });
+    // Ciphertext-Laden ist gemeinsam für alle Pfade
     let cipher: Uint8Array;
     if (row.bodyInline) {
       cipher = row.bodyInline;
@@ -376,14 +377,128 @@ export async function readObject(
     } else {
       throw new Error('object has neither inline body nor blob key');
     }
-    // SEC-K-034: decrypt-Failure auf 404 mappen statt 500-Stacktrace. 500 vs
-    // 404 würde als Existence-Oracle leaken (Row existiert aber nicht
-    // entschlüsselbar = Side-Channel-Info).
-    let body: Uint8Array;
-    try {
-      body = await decrypt(key, { ciphertext: cipher, nonce: row.nonce, version: row.keyVersion }, aad);
-    } catch {
-      throw errNotFound(`object ${id} not found or not visible`);
+
+    if (row.ownerId === ctx.userId) {
+      // Owner-Read
+      let dek: Uint8Array;
+      let aad: Uint8Array;
+      if (row.dekScheme === 'per_object') {
+        if (!row.ownerWrappedDek) {
+          throw errInternal(
+            `object ${row.id} is dek_scheme='per_object' but owner_wrapped_dek is NULL`,
+          );
+        }
+        const ownerKek = await kms().resolveUserDek(ctx.userId, ctx.requestId);
+        dek = await unwrapPerObjectDekForOwner(
+          row.ownerWrappedDek,
+          ownerKek,
+          row.ownerId,
+          row.id,
+        );
+        aad = buildAad({ recordType: 'objects-v2', objectId: row.id });
+      } else {
+        // legacy 'owner_hkdf'
+        dek = await kms().resolveUserDek(ctx.userId, ctx.requestId);
+        aad = buildAad({
+          recordType: 'objects',
+          ownerId: row.ownerId,
+          objectId: row.id,
+        });
+      }
+      const key = await importKey(dek);
+      // SEC-K-034: decrypt-Failure → 404 (Existence-Oracle-Block)
+      try {
+        body = await decrypt(
+          key,
+          { ciphertext: cipher, nonce: row.nonce, version: row.keyVersion },
+          aad,
+        );
+      } catch {
+        throw errNotFound(`object ${id} not found or not visible`);
+      }
+    } else {
+      // Non-Owner-Read: nur per_object über Group-Pfad
+      if (row.dekScheme !== 'per_object') {
+        throw new AppError(
+          501,
+          'https://problems.knowledge2/shared-body-not-implemented',
+          'shared body decryption only supported on per_object objects; legacy owner_hkdf objects need lazy-migration first',
+          { owner_id: row.ownerId, your_id: ctx.userId, dek_scheme: row.dekScheme },
+        );
+      }
+      // Lookup share_grants + group_members für aktuellen User
+      // RLS sorgt dafür dass nur sichtbare Rows zurückkommen.
+      const grants = await db
+        .select({
+          grantId: shareGrants.id,
+          groupId: shareGrants.grantedToGroupId,
+          wrappedObjectDek: shareGrants.wrappedObjectDek,
+          shareMasterVersion: shareGrants.groupMasterVersion,
+          wrappedGroupDek: groupMembers.wrappedGroupDek,
+          memberMasterVersion: groupMembers.wrappedForMasterVersion,
+          groupCurrentMasterVersion: groups.masterVersion,
+          groupWrappedMasterDek: groups.wrappedMasterDek,
+        })
+        .from(shareGrants)
+        .innerJoin(groupMembers, eq(groupMembers.groupId, shareGrants.grantedToGroupId))
+        .innerJoin(groups, eq(groups.id, shareGrants.grantedToGroupId))
+        .where(
+          and(
+            eq(shareGrants.resourceId, row.id),
+            isNull(shareGrants.revokedAt),
+            eq(groupMembers.userId, ctx.userId!),
+            isNull(groupMembers.removedAt),
+          ),
+        )
+        .limit(1);
+      const grant = grants[0];
+      if (!grant || !grant.wrappedObjectDek || !grant.groupId) {
+        throw errNotFound(`object ${id} not found or not visible`);
+      }
+      // Stale-Membership-Check (Crypto-Review §3.1 Schritt 4)
+      if (
+        grant.memberMasterVersion < grant.groupCurrentMasterVersion ||
+        (grant.shareMasterVersion !== null &&
+          grant.shareMasterVersion > grant.memberMasterVersion)
+      ) {
+        throw new AppError(
+          401,
+          'https://problems.knowledge2/stale-membership',
+          'group membership stale (master rotated since last wrap); re-login required',
+          { group_id: grant.groupId },
+        );
+      }
+      // Unwrap chain: member-KEK → group-master → object-DEK
+      const memberKek = await kms().resolveUserDek(ctx.userId!, ctx.requestId);
+      const groupMaster = await unwrapGroupMasterFromMemberRow(
+        grant.wrappedGroupDek,
+        memberKek,
+        grant.groupId,
+        grant.memberMasterVersion,
+      );
+      // Cache Group-Master für künftige Reads
+      await unwrapGroupMaster(
+        kms(),
+        grant.groupId,
+        grant.memberMasterVersion,
+        grant.groupWrappedMasterDek,
+      );
+      const objectDek = await unwrapPerObjectDekFromGroup(
+        grant.wrappedObjectDek,
+        groupMaster,
+        row.id,
+      );
+      const key = await importKey(objectDek);
+      const aad = buildAad({ recordType: 'objects-v2', objectId: row.id });
+      try {
+        body = await decrypt(
+          key,
+          { ciphertext: cipher, nonce: row.nonce, version: row.keyVersion },
+          aad,
+        );
+      } catch {
+        throw errNotFound(`object ${id} not found or not visible`);
+      }
     }
 
     // mark used (best-effort, separate tx not needed — same tx)
@@ -427,23 +542,44 @@ export async function updateObject(id: string, input: UpdateObjectInput): Promis
     if (input.expiresAt !== undefined) updates.expiresAt = input.expiresAt;
 
     if (input.body !== undefined) {
-      // F-1: same restriction as readObject — shared-write would need
-      // per-object DEK + re-wrapping to work. Block for now.
+      // Phase 1 sharing — Owner-Only-Write (Phase 2 erweitert auf Group-Write).
       if (row.ownerId !== ctx.userId) {
         throw new AppError(
           501,
           'https://problems.knowledge2/shared-body-not-implemented',
-          'shared body writes are not implemented; only the owner can replace the body',
+          'shared body writes are not implemented in Phase 1; only the owner can replace the body',
           { owner_id: row.ownerId, your_id: ctx.userId },
         );
       }
-      const dek = await kms().resolveUserDek(ctx.userId!, ctx.requestId);
+      // Dispatch je dek_scheme (Crypto-Review §3.2). Owner-Edit auf
+      // per_object: gleicher Per-Object-DEK (unwrapped aus owner_wrapped_dek)
+      // + AAD-v2. owner_hkdf bleibt wie heute.
+      let dek: Uint8Array;
+      let aad: Uint8Array;
+      if (row.dekScheme === 'per_object') {
+        if (!row.ownerWrappedDek) {
+          throw errInternal(
+            `object ${row.id} is dek_scheme='per_object' but owner_wrapped_dek is NULL`,
+          );
+        }
+        const ownerKek = await kms().resolveUserDek(ctx.userId!, ctx.requestId);
+        dek = await unwrapPerObjectDekForOwner(
+          row.ownerWrappedDek,
+          ownerKek,
+          row.ownerId,
+          row.id,
+        );
+        aad = buildAad({ recordType: 'objects-v2', objectId: row.id });
+      } else {
+        // legacy 'owner_hkdf'
+        dek = await kms().resolveUserDek(ctx.userId!, ctx.requestId);
+        aad = buildAad({
+          recordType: 'objects',
+          ownerId: row.ownerId,
+          objectId: row.id,
+        });
+      }
       const key = await importKey(dek);
-      const aad = buildAad({
-        recordType: 'objects',
-        ownerId: row.ownerId,
-        objectId: row.id,
-      });
       const cipher = await encrypt(key, input.body, aad);
       const bodyHash = await sha256Hex(input.body);
 
