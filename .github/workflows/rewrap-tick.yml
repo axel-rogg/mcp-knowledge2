@@ -8,17 +8,24 @@ name: rewrap-tick
 # Service-Token: GH-Secret `SERVICE_TOKEN_OPS` (oder Fallback `SERVICE_TOKEN`
 # wenn nicht gesetzt). Doppler-Sync legt das bei deploy/fly/sync-secrets.sh.
 #
+# ⚠️ KNOWN-ISSUE 2026-05-18: KC2 ist post-Lockdown internal-only (Flycast).
+# Public-URL mcp-knowledge2.fly.dev wurde abgeschaltet (fly.toml:force_https=
+# false). GH-Actions kann den endpoint nicht direkt erreichen. Solange
+# kein approval2-proxy-route existiert oder ein self-hosted runner im Fly-
+# Network steht: schedule auto-Disabled. workflow_dispatch funktioniert
+# nur wenn KC2-Public-Path manuell wieder aktiviert wird.
+#
+# Family-Mode-Impact: ZERO. Cron tickt sowieso nie weil kein Group >1000
+# Grants existiert.
+#
 # Failure-Behavior: bei non-2xx oeffnet die Action ein GH-Issue mit
 # label=rewrap-failure damit der Operator es sieht.
 
 on:
-  schedule:
-    # */2 = alle 2 Minuten. GitHub schedules sind "best-effort" und koennen
-    # bis zu 15 min Latenz haben — fuer einen async-rewrap-worker ist das
-    # akzeptabel, weil die Member-Remove-Operation selbst die Master-
-    # Rotation in der TX-1 schon erledigt; nur das Re-Wrap der share_grants
-    # ist async.
-    - cron: '*/2 * * * *'
+  # schedule: disabled — KC2 internal-only post 2026-05-17-Lockdown.
+  # Re-enable wenn approval2-proxy-route gebaut ist oder KC2-Public wieder live.
+  # schedule:
+  #   - cron: '*/2 * * * *'
   workflow_dispatch:
     inputs:
       max_jobs:
