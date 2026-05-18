@@ -164,6 +164,26 @@ mcp-knowledge2/
 - **Deploy (Cloud Run):** `deploy.yml` ist `workflow_dispatch`-only. `[deploy]`-Tag in Commit-Subject ist Konvention für künftige automatische Pipelines (z.B. wenn Cloud-Run-Auto-Deploy aktiviert wird) — analog zum Schwester-Repo mcp-approval2.
 - Co-Authored-By-Footer für Claude-generierte Commits
 
+### Atomar-Commit-Pattern (gegen parallel laufende Cloud-Agents)
+
+Cloud-Agents arbeiten parallel auf `main` und können staged Files mit-committen wenn das Race-Window offen ist. Pflicht-Sequenz pro Commit als **EIN Bash-Aufruf** mit `&&`-Chain:
+
+```bash
+cd /workspaces/mcp-knowledge2 && \
+  git status --short && \                  # 1. fremde Files identifizieren
+  git pull --rebase 2>&1 | tail -3 && \   # 2. fast-forward
+  git add <file1> <file2> && \             # 3. NUR explizite Files, nie -A/-.
+  git diff --cached --stat && \            # 4. sanity-check vor commit
+  git commit -m "..." && \                 # 5. atomar
+  git push 2>&1 | tail -6                  # 6. sofort raus
+```
+
+Sechs Regeln: `cd` immer am Anfang (Shell-State kann reset werden), `pull --rebase` IMMER, explizite Pfad-Liste, `diff --cached --stat` als Pre-Commit-Check, kein Tool-Call zwischen `add` und `commit`, `push` sofort. Bei `push` non-fast-forward: erneut pullen, dann pushen. Niemals `--force` / `--no-verify` / `add -A` / `add .`.
+
+**Cross-Repo-Reihenfolge:** Wenn Feature beide Repos braucht (KC2 + mcp-approval2): **KC2 zuerst** vollständig committen+pushen (Producer-Side), **dann approval2** (Consumer-Side — Adapter, Tools, PWA). Niemals beide in einer Bash-Sequence.
+
+Volle Memory-Doku: `feedback_cloud_agent_staging_race.md` (auto-Memory in der Claude-Code-Session).
+
 ## Konventionen
 
 - Plan-Files haben Status-Banner oben (✅ live / ⚠️ Spec / ⚠️ Draft)
