@@ -38,6 +38,24 @@ async function main() {
   const client = new pg.Client({ connectionString: url });
   await client.connect();
   try {
+    // Neon-Quirk: REFERENCES auf shared-Tables (users, invites) braucht
+    // entweder Owner-Status oder explizites GRANT. Beide Application-Roles
+    // (knowledge_app + knowledge_admin) sind Mitglied der `neon_superuser`-
+    // Gruppe — durch `SET ROLE` koennen wir die Privilegien aktivieren und
+    // alle Phase-2-DDL (FK-Constraints in Migs 0020 + 0025) durchgaengig
+    // anwenden, ohne separaten Operator-Bootstrap-Step.
+    //
+    // Falls die Rolle KEIN Mitglied von neon_superuser ist (z.B. lokaler
+    // Dev-Postgres), schluckt der try/catch das + Fortsetzung als
+    // current_user — owner-implicit-REFERENCES sollte dann reichen.
+    try {
+      await client.query(`SET ROLE neon_superuser`);
+      console.warn('▸ migrate.ts: SET ROLE neon_superuser succeeded (full DDL privs)');
+    } catch {
+      console.warn(
+        '▸ migrate.ts: SET ROLE neon_superuser unavailable, continuing as connecting role',
+      );
+    }
     await ensureMigrationsTable(client);
     const applied = await appliedSet(client);
     const files = (await readdir(MIGRATIONS_DIR))
