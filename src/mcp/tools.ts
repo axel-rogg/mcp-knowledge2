@@ -44,3 +44,23 @@ export async function runRegisteredTool(name: string, args: Record<string, unkno
 export function resetToolsForTest(): void {
   registry.clear();
 }
+
+/**
+ * Append a tag to a registered tool's annotations.tags (idempotent — duplicate
+ * tags are skipped). Used to mark Low-Level-Tools after their registration so
+ * the approval2-Auto-Forwarder can filter them via tags-check.
+ *
+ * Throws if the tool is not registered yet (caller order error).
+ */
+export function addAnnotationTag(toolName: string, tag: string): void {
+  const t = registry.get(toolName);
+  if (!t) throw new Error(`addAnnotationTag: tool not registered: ${toolName}`);
+  const annotations = (t.annotations ?? {}) as Record<string, unknown>;
+  const existing = Array.isArray(annotations['tags']) ? (annotations['tags'] as string[]) : [];
+  if (existing.includes(tag)) return;
+  const nextTags = [...existing, tag];
+  registry.set(toolName, {
+    ...t,
+    annotations: { ...annotations, tags: nextTags } as typeof t.annotations,
+  });
+}

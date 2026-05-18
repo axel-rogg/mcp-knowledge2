@@ -40,10 +40,45 @@ import { assertEmbedQuota, assertObjectQuota, releaseObjectQuota } from '../quot
 import { emitAudit } from '../observability/audit.ts';
 import { requireContext } from '../lib/context.ts';
 import { errBadRequest } from '../lib/errors.ts';
-import { registerTool } from './tools.ts';
+import { addAnnotationTag, registerTool } from './tools.ts';
 import type { CallToolResult } from './types.ts';
 import { zodToJsonSchema } from './json-schema.ts';
 import { registerNotesTools } from './tools/notes.ts';
+import { registerListsTools } from './tools/lists.ts';
+import { registerMemorizeTools } from './tools/memorize.ts';
+import { registerDocsTools } from './tools/docs.ts';
+import { registerSkillsTools } from './tools/skills.ts';
+import { registerGroupsTools } from './tools/groups.ts';
+import { registerSharingTools } from './tools/sharing.ts';
+import { registerObjectsBrowseTools } from './tools/objects-browse.ts';
+
+/**
+ * Low-Level-Tools die nur für direkte Storage-Operationen gedacht sind.
+ * Sie bleiben registriert (für S2S-Zugriff via approval2-Adapter etc.),
+ * werden aber mit `annotations.tags: ['low-level']` markiert, damit
+ * approval2's Auto-Forwarder sie aus der MCP-Client-tools/list ausblendet.
+ *
+ * High-Level-Pendants in den neuen Sub-Tool-Files (docs.put, lists.create,
+ * objects.browse_list/read, etc.) bieten User-friendly Surface.
+ */
+const LOW_LEVEL_TOOL_NAMES = [
+  'objects.create',
+  'objects.get',
+  'objects.list',
+  'objects.update',
+  'objects.delete',
+  'objects.restore',
+  'objects.usages',
+  'objects.add_ref',
+  'objects.remove_ref',
+  'shares.create',
+  'shares.list',
+  'shares.revoke',
+  'shares.shared_with_me',
+  'uploads.init',
+  'uploads.complete',
+  'uploads.status',
+] as const;
 
 // Subtype is free-form caller-convention post-ADR-0004. Storage does not
 // enforce the value; the regex below is an identifier-shape guard against
@@ -624,6 +659,21 @@ export function registerAllTools(): void {
   // Phase-1 Wrapper-Migration aus approval2 (2026-05-18).
   // Spec: docs/plans/active/PLAN-tool-surface-as-storage-canonical.md
   registerNotesTools();
+  registerListsTools();
+  registerMemorizeTools();
+  registerDocsTools();
+  registerSkillsTools();
+  registerGroupsTools();
+  registerSharingTools();
+  registerObjectsBrowseTools();
+
+  // Mark KC2 primitive tools as low-level — approval2's Auto-Forwarder
+  // (kc_wrappers/index.ts) filters them out of the MCP-Client tools/list.
+  // S2S- + admin-direkter Zugriff bleibt funktional, weil das Tool weiter
+  // registriert und über tools/call ansprechbar ist.
+  for (const name of LOW_LEVEL_TOOL_NAMES) {
+    addAnnotationTag(name, 'low-level');
+  }
 }
 
 // ─── Hand-rolled zod→JSON-Schema (no extra dep) ────────────────────────────
