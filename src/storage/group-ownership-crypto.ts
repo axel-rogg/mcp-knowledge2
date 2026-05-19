@@ -29,7 +29,6 @@ import { kms } from '../adapters/kms/index.ts';
 import {
   unwrapGroupMaster,
   unwrapGroupMasterFromMemberRow,
-  unwrapPerObjectDekForOwner,
   unwrapPerObjectDekFromGroup,
   wrapPerObjectDekForGroup,
   wrapPerObjectDekForOwner,
