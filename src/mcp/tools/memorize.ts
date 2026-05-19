@@ -159,7 +159,8 @@ export function registerMemorizeTools(): void {
           result: 'success',
           details: { result_count: 0 },
         });
-        return jsonResult({ items: [] });
+        // approval2-Compat: hits (alter Name); items wird in 1 Sprint deprecated.
+        return jsonResult({ hits: [], items: [] });
       }
 
       // 2. Batch-fetch createdAt + meta.scope for every hit-id (RLS-scoped via
@@ -207,7 +208,8 @@ export function registerMemorizeTools(): void {
         result: 'success',
         details: { result_count: items.length },
       });
-      return jsonResult({ items });
+      // approval2-Compat: hits (alter Name); items wird in 1 Sprint deprecated.
+      return jsonResult({ hits: items, items });
     },
   });
 
@@ -235,7 +237,8 @@ export function registerMemorizeTools(): void {
       const filtered = list.items.filter(
         (obj) => (obj.meta?.['scope'] as string | undefined) === target,
       );
-      return jsonResult({ items: filtered, nextCursor: list.nextCursor });
+      // approval2-Compat: nextCursor + next_cursor dual-emit (1-Sprint-Übergang).
+      return jsonResult({ items: filtered, nextCursor: list.nextCursor, next_cursor: list.nextCursor });
     },
   });
 

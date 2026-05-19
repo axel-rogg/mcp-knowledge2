@@ -353,7 +353,13 @@ export function registerListsTools(): void {
       if (input.limit !== undefined) opts.limit = input.limit;
       if (input.cursor !== undefined) opts.cursor = input.cursor;
       const result = await listObjects(opts);
-      return jsonResult(result);
+      // approval2-Compat: nextCursor (camelCase) ist primary; next_cursor
+      // (snake_case) als Übergangs-Alias für 1 Sprint.
+      return jsonResult({
+        items: result.items,
+        nextCursor: result.nextCursor,
+        next_cursor: result.nextCursor,
+      });
     },
   });
 

@@ -39,6 +39,7 @@ import { assertEmbedQuota, assertObjectQuota, releaseObjectQuota } from '../../q
 import { emitAudit } from '../../observability/audit.ts';
 import { requireContext } from '../../lib/context.ts';
 import { errBadRequest, errNotFound } from '../../lib/errors.ts';
+import { logger } from '../../lib/logger.ts';
 import { registerTool } from '../tools.ts';
 import type { CallToolResult } from '../types.ts';
 import { zodToJsonSchema } from '../json-schema.ts';
@@ -192,6 +193,51 @@ export function registerSkillsTools(): void {
 
       if (input.id !== undefined) {
         // UPDATE-Path — refs werden separat verwaltet (attach/detach).
+        //
+        // Lazy-Migration für legacy approval2-Skills: alte Skills haben
+        // `meta.resource_ids[]` ohne korrespondierende `object_refs(role='resource')`.
+        // Beim UPDATE wird `meta` durch den neuen patch ueberschrieben — ohne
+        // diese Pre-Migration gingen die Resources lautlos verloren. Wir lesen
+        // den bestehenden Object-State, vergleichen `meta.resource_ids[]` gegen
+        // outgoing-refs(role='resource') und addRef() jeden fehlenden Eintrag.
+        // Idempotent: bereits-vorhandene Refs werden via existierende
+        // (from,to,role)-UNIQUE-Constraint übersprungen — wir prüfen aber
+        // explizit, damit der Log-Count akkurat ist.
+        try {
+          const existing = await readObject(input.id, { includeBody: false });
+          const legacyResourceIds = Array.isArray(existing.view.meta?.['resource_ids'])
+            ? (existing.view.meta!['resource_ids'] as unknown[]).filter(
+                (v): v is string => typeof v === 'string' && v.length > 0,
+              )
+            : [];
+          if (legacyResourceIds.length > 0) {
+            const outgoing = await listOutgoingRefs(input.id);
+            const existingResourceTargets = new Set(
+              outgoing.filter((r) => r.role === RESOURCE_ROLE).map((r) => r.toId),
+            );
+            const missing = legacyResourceIds.filter((rid) => !existingResourceTargets.has(rid));
+            let migrated = 0;
+            for (const rid of missing) {
+              try {
+                await addRef({ fromId: input.id, toId: rid, role: RESOURCE_ROLE });
+                migrated += 1;
+              } catch {
+                // ignore individual addRef failures (target invisible /
+                // not-found) — skill update should still succeed.
+              }
+            }
+            if (migrated > 0) {
+              logger.info(
+                { skillId: input.id, migrated },
+                'skills.put: lazy-migrated legacy meta.resource_ids[] to object_refs',
+              );
+            }
+          }
+        } catch {
+          // pre-migration is best-effort — if it fails (e.g. object not
+          // visible), let updateObject below surface the canonical error.
+        }
+
         const patch: Parameters<typeof updateObject>[1] = {};
         patch.title = input.title;
         patch.body = body;
@@ -387,7 +433,9 @@ export function registerSkillsTools(): void {
         if (!Array.isArray(groups)) return false;
         return groups.includes(target);
       });
-      return jsonResult({ items: filtered, nextCursor: list.nextCursor });
+      // approval2-Compat: nextCursor (camelCase) ist primary; next_cursor (snake_case)
+      // als Übergangs-Alias für 1 Sprint (analog lists.list / objects.browse_list).
+      return jsonResult({ items: filtered, nextCursor: list.nextCursor, next_cursor: list.nextCursor });
     },
   });
 

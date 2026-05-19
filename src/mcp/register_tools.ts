@@ -342,7 +342,7 @@ export function registerAllTools(): void {
     inputSchema: zodToJsonSchema(DeleteInput),
     annotations: {
       title: 'Delete object',
-      sensitivity: 'destructive',
+      sensitivity: 'danger',
       write: true,
       wysiwys: { display_template: 'Delete object {{id}}' },
     },
@@ -439,7 +439,7 @@ export function registerAllTools(): void {
     inputSchema: zodToJsonSchema(RemoveRefInput),
     annotations: {
       title: 'Remove ref',
-      sensitivity: 'destructive',
+      sensitivity: 'danger',
       write: true,
       wysiwys: { display_template: 'Remove ref {{from_id}} --[{{role}}]→ {{to_id}}' },
     },
@@ -517,7 +517,7 @@ export function registerAllTools(): void {
     inputSchema: zodToJsonSchema(z.object({ share_id: z.string().uuid() })),
     annotations: {
       title: 'Revoke share',
-      sensitivity: 'destructive',
+      sensitivity: 'danger',
       write: true,
       wysiwys: { display_template: 'Revoke share {{share_id}}' },
     },

@@ -92,7 +92,9 @@ const ObjectsBrowseListInput = z
 
 const ObjectsBrowseReadInput = z
   .object({
-    id: z.string().uuid(),
+    // approval2-Compat: erlaubt ULID/UUID/sonstige Identifier-Forms,
+    // KC2-internal validates row-existence via DB-query.
+    id: z.string().min(1).max(128),
     expand_body: z.boolean().optional(),
     preview_chars: z.number().int().min(1).max(50_000).optional(),
   })
@@ -128,7 +130,13 @@ export function registerObjectsBrowseTools(): void {
       if (input.limit !== undefined) opts.limit = input.limit;
       if (input.cursor !== undefined) opts.cursor = input.cursor;
       const out = await listObjects(opts);
-      return jsonResult({ items: out.items, next_cursor: out.nextCursor });
+      // approval2-Compat: nextCursor (camelCase) ist primary; next_cursor
+      // (snake_case) als Übergangs-Alias für 1 Sprint.
+      return jsonResult({
+        items: out.items,
+        nextCursor: out.nextCursor,
+        next_cursor: out.nextCursor,
+      });
     },
   });
 

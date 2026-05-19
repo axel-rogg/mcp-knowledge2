@@ -55,7 +55,9 @@ const UpdateInput = z
     id: z.string().min(1).max(128),
     title: z.string().min(1).max(200).optional(),
     body: z.string().min(1).max(16_384).optional(),
-    description: z.string().max(2000).optional(),
+    // approval2-Compat: null = "description clearen"; KC2's UpdateObjectInput
+    // akzeptiert string | null. Schema-Refine zaehlt null als defined-Patch.
+    description: z.string().max(2000).nullable().optional(),
     keywords: z.array(z.string().min(1).max(64)).max(32).optional(),
     expected_version: z.number().int().nonnegative().optional(),
   })

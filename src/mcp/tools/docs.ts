@@ -354,15 +354,34 @@ export function registerDocsTools(): void {
       const ctx = requireContext();
       if (!ctx.userId) throw errBadRequest('user context required');
       const all = await listIncomingRefs(input.id);
-      // approval2-shape: { incoming: [{subtype, id, title}], outgoing: [] }.
-      // KC2 listIncomingRefs doesn't denormalize; we only return role='resource'
-      // refs (skill_resource-Slot) and surface from_id as id. Title-Resolution
-      // wuerde N+1 queries kosten — wir lassen Title weg und der Caller
-      // (approval2) kann sich pro id ein objects.get holen, wenn er Title
-      // braucht. Matches the "incoming skill-refs" intent.
-      const incoming = all
-        .filter((r) => r.role === ROLE_RESOURCE)
-        .map((r) => ({ id: r.fromId, role: r.role }));
+      // approval2-shape: { incoming: [{id, role, subtype, title}], outgoing: [] }.
+      // KC2 listIncomingRefs doesn't denormalize, so we resolve subtype+title
+      // per ref via readObject(includeBody:false). Per-Ref-Lookup ist OK bei
+      // realistic refcount (typischer docs.usages-Aufruf hat <50 Skills
+      // attached). TODO: bei perf-Bedenken auf batch-fetch via
+      // db.select().where(inArray(objects.id, ids)) wechseln.
+      const resourceRefs = all.filter((r) => r.role === ROLE_RESOURCE);
+      const incoming = await Promise.all(
+        resourceRefs.map(async (r) => {
+          try {
+            const { view } = await readObject(r.fromId, { includeBody: false });
+            return {
+              id: r.fromId,
+              role: r.role,
+              subtype: view.subtype,
+              title: view.title,
+            };
+          } catch {
+            // ref-target not visible (RLS / soft-deleted race) — surface id+role only.
+            return {
+              id: r.fromId,
+              role: r.role,
+              subtype: null,
+              title: null,
+            };
+          }
+        }),
+      );
       return jsonResult({ incoming, outgoing: [] });
     },
   });
