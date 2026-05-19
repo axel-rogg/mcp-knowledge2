@@ -68,3 +68,39 @@ in mcp-approval2), not in storage.
   sufficient for replay-protection
 - Keep `audit_log.resource_kind` as nullable TEXT: rejected as default —
   audit_log details_json reicht; see §6.4 of brief for opt-in alternative
+
+
+## Appendix — 2026-05-19: Convenience-Layer als Tool-Schicht
+
+**Update**: Tool-Wrapper-Migration aus mcp-approval2 nach KC2 (Plan-File
+[PLAN-tool-surface-as-storage-canonical.md](../plans/active/PLAN-tool-surface-as-storage-canonical.md))
+fügt KC2 eine zweite Tool-Ebene hinzu:
+
+1. **Generic Primitives** (16 Tools, `tags:['low-level']`): `objects.*`,
+   `shares.*`, `uploads.*` — direkt auf storage-Layer, subtype-agnostisch
+   wie ADR vorsieht.
+
+2. **Subtype-aware Convenience-Tools** (47 Tools, neu in KC2): `docs.put`,
+   `lists.create`, `notes.update`, `groups.*`, `memorize.add` etc. —
+   user-friendly Surface die intern `createObject({subtype:'doc', ...})`
+   ruft.
+
+**Wichtig: ADR-0004 bleibt eingehalten.** Die **Daten-Schicht** ist weiter
+generic — `objects` Tabelle hat `subtype: string`, kein Enum, kein
+discriminated-Schema. Subtype-Awareness lebt **nur in der Tool-Schicht**
+(`src/mcp/tools/<family>.ts`).
+
+Begründung Convenience-Layer:
+- MCP-Clients (Claude.ai) brauchen User-friendly Tool-Names wie
+  `docs.put({title, body})` statt `objects.create({subtype:'doc', title,
+  body_b64, ...})`. Convenience-Tools sind dünne Wrapper, kein
+  zusätzlicher Daten-Layer.
+- Sub-Tool-Files (`src/mcp/tools/<family>.ts`) sind 1:1 äquivalent zu
+  den hardcoded approval2-Wrappers vor Cutover — Schema, Sensitivity,
+  display_template aus dem alten approval2-Hub portiert.
+- Cross-Repo Single-Source-of-Truth: approval2 sieht die Tools jetzt
+  via Auto-Forwarder als kanonisch von KC2. Schema-Drift unmöglich.
+
+Neue Subtypes in der Tool-Schicht (Phase 1 der Migration): `doc`,
+`skill_manifest`, `memo`, `list`, `note`, `group`. Storage-Layer bleibt
+unverändert generic — keine Migration nötig.

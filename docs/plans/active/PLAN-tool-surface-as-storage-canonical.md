@@ -1,6 +1,13 @@
 # PLAN — KC2 als Tool-Surface-Owner (Wrapper-Migration aus approval2)
 
-> **Status: ✅ APPROVED — Phase 1 pending Code-Start (2026-05-18)**
+> **Status: ✅ COMPLETE — alle Phasen LIVE (2026-05-18/19)**
+>
+> KC2-Side Commits:
+> - 47 Tool-Files (notes/lists/memorize/docs/skills/groups/sharing/objects-browse): [123a94f](https://github.com/axel-rogg/mcp-knowledge2/commit/123a94f) (pilot) + [b1e44e0](https://github.com/axel-rogg/mcp-knowledge2/commit/b1e44e0) (Rest) + [1c0420a](https://github.com/axel-rogg/mcp-knowledge2/commit/1c0420a) (tags + sanity)
+> - OBO-Service-Token-Bypass für tools/list-Discovery: [9296e74](https://github.com/axel-rogg/mcp-knowledge2/commit/9296e74)
+> - 7 must-fix-Items vor approval2-Cleanup: [4bf4ce5](https://github.com/axel-rogg/mcp-knowledge2/commit/4bf4ce5)
+>
+> approval2-Side: hardcoded Wrappers in `apps/server/src/_to_delete/2026-05-19/wrappers/` soft-deleted, Feature-Flag `WRAPPER_SOURCE` 2026-05-19 entfernt.
 >
 > Cross-Repo-Partner: [mcp-approval2/docs/plans/active/PLAN-tool-surface-cleanup.md](https://github.com/axel-rogg/mcp-approval2/blob/main/docs/plans/active/PLAN-tool-surface-cleanup.md)
 >

@@ -56,7 +56,19 @@
 - Eigene DCR-OAuth-2.1-Facade unter `src/auth/oauth_facade/` (Discovery, DCR, JWKS, /authorize+Google-redirect, /token+PKCE+refresh-rotation)
 - Eigene `users` + `invites` + `signing_keys` + `oauth_clients` Tabellen (Migrations 0005-0008)
 - KMS: eigenes Adapter-Interface — **`cloud_kms` Default seit 2026-05-17** (Google Cloud KMS **single-region `europe-west3`** seit Pilot-Deploy-Day-Fix — `eu` multi-region funktioniert mit `hashicorp/google` 6.x-Provider nicht (`KMS_RESOURCE_NOT_FOUND_IN_LOCATION, request misrouted to global`-Bug); Cost-identisch, Failover für 1 Solo-Key überdimensioniert. Siehe [mcp-approval2/docs/adr/0011-cloud-kms-kek-provider.md](https://github.com/axel-rogg/mcp-approval2/blob/main/docs/adr/0011-cloud-kms-kek-provider.md)). `openbao` ist alternative Selfhosting-Variante (verlangt Offline-Unseal-Key-Storage), `hkdf_local` ist Dev/Test-Fallback.
-- MCP-Transport unter `POST /mcp` (Streamable-HTTP) — 17 Tool-Wrapper für die `/v1/*` REST-Surface (9 objects.* / 4 shares.* / 1 search / 3 uploads.*)
+- MCP-Transport unter `POST /mcp` (Streamable-HTTP):
+  - **16 Low-Level-Primitive** (9 objects.* / 4 shares.* / 3 uploads.*) — mit `annotations.tags:['low-level']` markiert seit Wrapper-Migration 2026-05-18/19. Approval2's Auto-Forwarder filtert sie aus der MCP-Client-tools/list, aber sie bleiben S2S-callable via `tools/call`.
+  - **47 High-Level-Subtype-Wrappers** (2026-05-18/19, [docs/plans/active/PLAN-tool-surface-as-storage-canonical.md](docs/plans/active/PLAN-tool-surface-as-storage-canonical.md)):
+    - `docs.*` (7): put/get/list/delete/usages/attach_to/update_summary
+    - `skills.*` (9): put/get/get_bundle/list/delete/search/read_resource/attach_resource/detach_resource
+    - `memorize.*` (4): add/search/list_recent/delete
+    - `lists.*` (6): create/add_item/tick/untick/list/get
+    - `notes.*` (5): create/update/list/get/delete
+    - `groups.*` (10): create/list/get/list_members/add_member/remove_member/invite_email/archive/set_read_audit/transfer_ownership
+    - Sharing helpers (4): docs.share_with_group, skills.share_with_group, shares.list_my_shares, shares.list_for_group
+    - High-Level Browser-Wrapper (2): objects.browse_list, objects.browse_read (body-truncated für PWA)
+  - **Subtype-Konvention** lebt jetzt in KC2 (`doc`/`skill_manifest`/`memo`/`list`/`note`/`group`). ADR-0004-konform: Daten-Schicht bleibt generic, nur Tool-Schicht subtype-aware.
+  - **Sub-Tool-Files**: jede Family in `src/mcp/tools/<family>.ts`; alle registriert via `register_tools.ts:registerAllTools()`. Helper `addAnnotationTag(name, 'low-level')` markiert primitives als gefiltert.
 - Audit-Log mit `via_proxy` + `approval_id` Spalten (Cross-Service-Trail)
 - Cross-Service-Contract-Tests fixieren das Wire-Format zwischen approval2 ↔ KC2
 
