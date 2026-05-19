@@ -66,6 +66,14 @@ export async function readRevision(objectId: string, version: number): Promise<R
 
     const dek = await kms().resolveUserDek(ctx.userId!, ctx.requestId);
     const key = await importKey(dek);
+    // Phase 3b.1: revisions koennen zu group-owned objects gehoeren — solche
+    // historische bodies sind nicht user-DEK-lesbar (kein AAD-Pendant). Block
+    // hier mit Hint, statt corrupt AAD zu bauen.
+    if (!parent.ownerId) {
+      throw errBadRequest(
+        `revision-read for group-owned object ${objectId} not yet supported (Phase 3b)`,
+      );
+    }
     const aad = buildAad({
       recordType: 'object-revisions',
       ownerId: parent.ownerId,

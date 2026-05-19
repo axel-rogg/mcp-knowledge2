@@ -51,6 +51,9 @@ import { registerSkillsTools } from './tools/skills.ts';
 import { registerGroupsTools } from './tools/groups.ts';
 import { registerSharingTools } from './tools/sharing.ts';
 import { registerObjectsBrowseTools } from './tools/objects-browse.ts';
+import { registerObjectsOwnershipTools } from './tools/objects-ownership.ts';
+import { registerUsersResolveTools } from './tools/users-resolve.ts';
+import { registerAdminOrphansTools } from './tools/admin-orphans.ts';
 
 /**
  * Low-Level-Tools die nur für direkte Storage-Operationen gedacht sind.
@@ -666,6 +669,10 @@ export function registerAllTools(): void {
   registerGroupsTools();
   registerSharingTools();
   registerObjectsBrowseTools();
+  // Phase 3b.4 (2026-05-19): generic Ownership + Admin-Orphans + Users-Resolve.
+  registerObjectsOwnershipTools();
+  registerUsersResolveTools();
+  registerAdminOrphansTools();
 
   // Mark KC2 primitive tools as low-level — approval2's Auto-Forwarder
   // (kc_wrappers/index.ts) filters them out of the MCP-Client tools/list.

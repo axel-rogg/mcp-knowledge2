@@ -62,6 +62,8 @@ describe('Phase-1 Wrapper-Migration sanity', () => {
       shares: tools.filter((t) => t.name.startsWith('shares.')).length,
       objects: tools.filter((t) => t.name.startsWith('objects.')).length,
       uploads: tools.filter((t) => t.name.startsWith('uploads.')).length,
+      admin: tools.filter((t) => t.name.startsWith('admin.')).length,
+      users: tools.filter((t) => t.name.startsWith('users.')).length,
     };
     expect(byFamily, JSON.stringify(byFamily, null, 2)).toMatchObject({
       notes: 5,
@@ -71,8 +73,13 @@ describe('Phase-1 Wrapper-Migration sanity', () => {
       skills: 10, // 9 high-level + 1 sharing helper (skills.share_with_group)
       groups: 10,
       shares: 6, // 4 primitives (create/list/revoke/shared_with_me) + 2 helpers (list_my_shares/list_for_group)
-      objects: 11, // 9 primitives + browse_list/read
+      // 9 primitives + browse_list/read + 3 ownership (move_to_group/_personal/transfer_ownership, Phase 3b.4)
+      objects: 14,
       uploads: 3,
+      // Phase 3b.4: admin.list_orphan_objects + admin.purge_orphan_object
+      admin: 2,
+      // Phase 3b.4: users.resolve_email
+      users: 1,
     });
   });
 });

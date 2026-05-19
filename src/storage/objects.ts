@@ -81,7 +81,14 @@ export interface UpdateObjectInput {
 
 export interface ObjectView {
   id: string;
-  ownerId: string;
+  /**
+   * Phase 3b.1: nullable wenn group-owned (XOR mit owningGroupId). Legacy
+   * user-owned-paths duerfen non-null assumen; neue group-aware Surfaces
+   * lesen owningGroupId.
+   */
+  ownerId: string | null;
+  owningGroupId: string | null;
+  groupMasterVersion: number | null;
   subtype: string | null;
   title: string | null;
   description: string | null;
@@ -107,6 +114,8 @@ function rowToView(r: ObjectRow): ObjectView {
   return {
     id: r.id,
     ownerId: r.ownerId,
+    owningGroupId: r.owningGroupId,
+    groupMasterVersion: r.groupMasterVersion,
     subtype: r.subtype,
     title: r.title,
     description: r.description,
@@ -388,7 +397,12 @@ export async function readObject(
             `object ${row.id} is dek_scheme='per_object' but owner_wrapped_dek is NULL`,
           );
         }
-        const ownerKek = await kms().resolveUserDek(ctx.userId, ctx.requestId);
+        if (!row.ownerId) {
+          // Phase 3b.1: group-owned objects haben owner_id=NULL — read-flow
+          // muss via group-ownership-crypto dispatcht werden.
+          throw errInternal(`object ${row.id} is group-owned; user-DEK read-path invalid`);
+        }
+        const ownerKek = await kms().resolveUserDek(ctx.userId!, ctx.requestId);
         dek = await unwrapPerObjectDekForOwner(
           row.ownerWrappedDek,
           ownerKek,
@@ -398,7 +412,10 @@ export async function readObject(
         aad = buildAad({ recordType: 'objects-v2', objectId: row.id });
       } else {
         // legacy 'owner_hkdf'
-        dek = await kms().resolveUserDek(ctx.userId, ctx.requestId);
+        if (!row.ownerId) {
+          throw errInternal(`object ${row.id} has dek_scheme='owner_hkdf' but no owner_id`);
+        }
+        dek = await kms().resolveUserDek(ctx.userId!, ctx.requestId);
         aad = buildAad({
           recordType: 'objects',
           ownerId: row.ownerId,
@@ -562,6 +579,9 @@ export async function updateObject(id: string, input: UpdateObjectInput): Promis
             `object ${row.id} is dek_scheme='per_object' but owner_wrapped_dek is NULL`,
           );
         }
+        if (!row.ownerId) {
+          throw errInternal(`object ${row.id} is group-owned; user-write-path invalid`);
+        }
         const ownerKek = await kms().resolveUserDek(ctx.userId!, ctx.requestId);
         dek = await unwrapPerObjectDekForOwner(
           row.ownerWrappedDek,
@@ -572,6 +592,9 @@ export async function updateObject(id: string, input: UpdateObjectInput): Promis
         aad = buildAad({ recordType: 'objects-v2', objectId: row.id });
       } else {
         // legacy 'owner_hkdf'
+        if (!row.ownerId) {
+          throw errInternal(`object ${row.id} has dek_scheme='owner_hkdf' but no owner_id`);
+        }
         dek = await kms().resolveUserDek(ctx.userId!, ctx.requestId);
         aad = buildAad({
           recordType: 'objects',

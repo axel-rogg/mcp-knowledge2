@@ -39,7 +39,14 @@ export const objects = pgTable(
   'objects',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    ownerId: uuid('owner_id').notNull(),
+    // Phase 3b.1: owner_id ist nullable (XOR mit owning_group_id, Mig 0027).
+    // CHECK-Constraint in DB enforct: genau eines von beiden ist gesetzt.
+    ownerId: uuid('owner_id'),
+    owningGroupId: uuid('owning_group_id'),
+    // Phase 3b.1: bei dek_scheme='group_owned' tracked welcher Master-Version
+    // das owner_wrapped_dek entspricht. Bei Member-Remove muss der Rewrap-
+    // Worker alle objects mit group_master_version<new_version re-wrappen.
+    groupMasterVersion: integer('group_master_version'),
     subtype: text('subtype'),
 
     title: text('title'),
@@ -128,6 +135,8 @@ export const objects = pgTable(
     updated: index('idx_objects_updated').on(t.updatedAt),
     ownerHash: index('idx_objects_owner_hash').on(t.ownerId, t.bodyHash),
     deleted: index('idx_objects_deleted_at').on(t.deletedAt),
+    // Phase 3b.1 (Mig 0027): Partial-Index fuer group-owned-Listing.
+    owningGroup: index('idx_objects_owning_group').on(t.owningGroupId, t.updatedAt),
   }),
 );
 

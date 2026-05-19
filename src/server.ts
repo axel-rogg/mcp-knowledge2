@@ -15,6 +15,7 @@ import { healthRouter } from './routes/health.ts';
 import { objectsRouter } from './routes/objects.ts';
 import { sharesRouter } from './routes/shares.ts';
 import { groupsRouter } from './routes/groups.ts';
+import { objectsOwnershipRouter } from './routes/objects-ownership.ts';
 import { searchRouter } from './routes/search.ts';
 import { uploadsRouter } from './routes/uploads.ts';
 import { internalRouter } from './routes/internal.ts';
@@ -108,6 +109,8 @@ v1.use('*', idempotency);
 v1.route('/', objectsRouter);
 v1.route('/', sharesRouter);
 v1.route('/', groupsRouter);
+// Phase 3b.3: ownership-transitions, user-resolve, admin-orphans
+v1.route('/', objectsOwnershipRouter);
 v1.route('/', searchRouter);
 v1.route('/', uploadsRouter);
 

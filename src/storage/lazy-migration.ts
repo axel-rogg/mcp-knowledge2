@@ -65,11 +65,28 @@ export interface LazyMigrationResult {
  * @param row Object-Row (vor lock-update geladen)
  * @param requestId für KMS-Audit-Trail
  */
+/**
+ * Phase 3b.1: legacy lazyMigrate flow ist user-owned-only. Group-owned objects
+ * (owner_id IS NULL) duerfen hier nicht hineingeraten — sie gehen ueber den
+ * group-ownership-crypto.ts-Pfad. Schmaler Type-Guard mit aussagekraeftigem
+ * Error.
+ */
+function requireOwnerId(row: ObjectRow): string {
+  if (row.ownerId === null || row.ownerId === undefined) {
+    throw errInternal(
+      `lazy-migration: object ${row.id} is group-owned (owner_id NULL); ` +
+        `caller must dispatch via group-ownership-crypto.ts`,
+    );
+  }
+  return row.ownerId;
+}
+
 export async function lazyMigrateToPerObject(
   db: Db,
   row: ObjectRow,
   requestId: string,
 ): Promise<LazyMigrationResult> {
+  const ownerId = requireOwnerId(row);
   // Idempotenz: wenn schon per_object, nur DEK unwrappen und zurückgeben
   if (row.dekScheme === 'per_object') {
     if (!row.ownerWrappedDek) {
@@ -77,11 +94,11 @@ export async function lazyMigrateToPerObject(
         `object ${row.id} is dek_scheme='per_object' but owner_wrapped_dek is NULL`,
       );
     }
-    const ownerKek = await kms().resolveUserDek(row.ownerId, requestId);
+    const ownerKek = await kms().resolveUserDek(ownerId, requestId);
     const perObjectDek = await unwrapPerObjectDekForOwner(
       row.ownerWrappedDek,
       ownerKek,
-      row.ownerId,
+      ownerId,
       row.id,
     );
     return { perObjectDek, row };
@@ -94,11 +111,11 @@ export async function lazyMigrateToPerObject(
   }
 
   // 1. Decrypt body mit Owner-DEK + legacy AAD
-  const ownerKek = await kms().resolveUserDek(row.ownerId, requestId);
+  const ownerKek = await kms().resolveUserDek(ownerId, requestId);
   const oldKey = await importKey(ownerKek);
   const oldAad = buildAad({
     recordType: 'objects',
-    ownerId: row.ownerId,
+    ownerId: ownerId,
     objectId: row.id,
   });
 
@@ -134,7 +151,7 @@ export async function lazyMigrateToPerObject(
   const ownerWrappedDek = await wrapPerObjectDekForOwner(
     perObjectDek,
     ownerKek,
-    row.ownerId,
+    ownerId,
     row.id,
   );
 
